@@ -4,7 +4,7 @@ import { UploadOverlay } from './components/UploadOverlay'
 import { DashboardHeader } from './components/DashboardHeader'
 import { KpiRibbon } from './components/KpiRibbon'
 import { ChartsGrid } from './components/ChartsGrid'
-import { ProductTable } from './components/ProductTable'
+import { OrdersTable } from './components/OrdersTable'
 import { parseExcelFile } from './lib/parseExcel'
 import { buildSampleData } from './lib/sampleData'
 import type { ParseResult } from './lib/types'
@@ -19,8 +19,8 @@ export default function App() {
     setError(null)
     try {
       const result = await parseExcelFile(file)
-      if (result.products.length === 0) {
-        throw new Error('No usable rows were found in this spreadsheet.')
+      if (result.items.length === 0) {
+        throw new Error('No usable order rows were found in this spreadsheet.')
       }
       setData(result)
     } catch (err) {
@@ -71,19 +71,19 @@ export default function App() {
         )}
 
         <section className="animate-fade-in">
-          <KpiRibbon kpis={data.kpis} />
+          <KpiRibbon kpis={data.kpis} currency={data.currency} />
         </section>
 
         <section className="animate-fade-in">
-          <ChartsGrid products={data.products} />
+          <ChartsGrid items={data.items} currency={data.currency} />
         </section>
 
         <section className="animate-fade-in">
-          <ProductTable products={data.products} />
+          <OrdersTable items={data.items} currency={data.currency} />
         </section>
 
         <footer className="pb-4 pt-2 text-center text-xs text-slate-600">
-          Processed entirely in your browser · {data.fileName}
+          Processed entirely in your browser · {data.fileName} · sheet “{data.sheetName}”
         </footer>
       </main>
     </div>

@@ -23,7 +23,7 @@ export function DashboardHeader({ data, onReset }: DashboardHeaderProps) {
               <FileSpreadsheet className="h-3 w-3" />
               <span className="max-w-[180px] truncate">{data.fileName}</span>
               <span className="text-slate-700">·</span>
-              <span>{formatNumber(data.products.length)} SKUs</span>
+              <span>{formatNumber(data.kpis.orderCount)} orders</span>
             </div>
           </div>
         </div>

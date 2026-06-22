@@ -1,18 +1,26 @@
-import type { Product } from './types'
+import type { OrderItem } from './types'
 
-const CSV_COLUMNS: Array<{ header: string; value: (p: Product) => string | number }> = [
-  { header: 'SKU', value: (p) => p.sku },
-  { header: 'Product Name', value: (p) => p.name },
-  { header: 'Category', value: (p) => p.category },
-  { header: 'Price', value: (p) => p.price.toFixed(2) },
-  { header: 'Cost', value: (p) => p.cost.toFixed(2) },
-  { header: 'Units Sold', value: (p) => p.unitsSold },
-  { header: 'Stock', value: (p) => p.stock },
-  { header: 'Revenue', value: (p) => p.revenue.toFixed(2) },
-  { header: 'Profit', value: (p) => p.profit.toFixed(2) },
-  { header: 'Margin %', value: (p) => (p.margin * 100).toFixed(2) },
-  { header: 'Rating', value: (p) => (p.rating ?? '') },
-  { header: 'Low Stock', value: (p) => (p.lowStock ? 'YES' : 'NO') },
+const CSV_COLUMNS: Array<{ header: string; value: (o: OrderItem) => string | number }> = [
+  { header: 'Order ID', value: (o) => o.orderId },
+  { header: 'Order Item ID', value: (o) => o.orderItemId },
+  { header: 'Status', value: (o) => o.status },
+  { header: 'SKU', value: (o) => o.sku },
+  { header: 'Product Name', value: (o) => o.productName },
+  { header: 'Variation', value: (o) => o.variation },
+  { header: 'Qty Purchased', value: (o) => o.qtyPurchased },
+  { header: 'Qty Shipped', value: (o) => o.qtyShipped },
+  { header: 'Qty To Ship', value: (o) => o.qtyToShip },
+  { header: 'Qty Canceled', value: (o) => o.qtyCanceled },
+  { header: 'Revenue', value: (o) => o.revenue.toFixed(2) },
+  { header: 'Discount', value: (o) => o.discount.toFixed(2) },
+  { header: 'Shipping Cost', value: (o) => o.shippingCost.toFixed(2) },
+  { header: 'Carrier', value: (o) => o.carrier },
+  { header: 'Tracking Number', value: (o) => o.trackingNumber },
+  { header: 'Settlement', value: (o) => o.settlementStatus },
+  { header: 'City', value: (o) => o.city },
+  { header: 'State', value: (o) => o.state },
+  { header: 'Country', value: (o) => o.country },
+  { header: 'Purchase Date', value: (o) => o.purchaseDateRaw },
 ]
 
 function escapeCell(value: string | number): string {
@@ -23,18 +31,18 @@ function escapeCell(value: string | number): string {
   return s
 }
 
-/** Build a CSV string from the (already filtered/sorted) products. */
-export function productsToCsv(products: Product[]): string {
+/** Build a CSV string from the (already filtered/sorted) order items. */
+export function ordersToCsv(items: OrderItem[]): string {
   const head = CSV_COLUMNS.map((c) => c.header).join(',')
-  const body = products
-    .map((p) => CSV_COLUMNS.map((c) => escapeCell(c.value(p))).join(','))
+  const body = items
+    .map((o) => CSV_COLUMNS.map((c) => escapeCell(c.value(o))).join(','))
     .join('\n')
   return `${head}\n${body}`
 }
 
-/** Trigger a browser download of the products as a CSV file. */
-export function downloadCsv(products: Product[], fileName = 'temu-products-export.csv'): void {
-  const csv = productsToCsv(products)
+/** Trigger a browser download of the order items as a CSV file. */
+export function downloadCsv(items: OrderItem[], fileName = 'temu-orders-export.csv'): void {
+  const csv = ordersToCsv(items)
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

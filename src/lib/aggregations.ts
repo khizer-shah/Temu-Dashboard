@@ -1,69 +1,80 @@
-import type { Product } from './types'
+import type { OrderItem } from './types'
 
-export interface CategoryDatum {
-  category: string
+export interface ProductDatum {
+  name: string
+  sku: string
   revenue: number
-  profit: number
   units: number
 }
 
-export interface VelocityDatum {
-  name: string
-  sku: string
-  unitsSold: number
-  price: number
+export interface StatusDatum {
+  status: string
+  count: number
   revenue: number
-  margin: number
 }
 
-export interface ProfitDatum {
-  name: string
-  sku: string
-  profit: number
-  margin: number
+export interface TrendDatum {
+  key: string
+  label: string
+  sort: number
+  revenue: number
+  orders: number
 }
 
-/** Revenue / profit / units rolled up by category, sorted by revenue desc. */
-export function revenueByCategory(products: Product[]): CategoryDatum[] {
-  const map = new Map<string, CategoryDatum>()
-  for (const p of products) {
-    const cur = map.get(p.category) ?? {
-      category: p.category,
-      revenue: 0,
-      profit: 0,
-      units: 0,
-    }
-    cur.revenue += p.revenue
-    cur.profit += p.profit
-    cur.units += p.unitsSold
-    map.set(p.category, cur)
+export interface DestinationDatum {
+  destination: string
+  revenue: number
+  orders: number
+}
+
+/** Top-N products by revenue (rolled up across order items / variations). */
+export function topProductsByRevenue(items: OrderItem[], n = 8): ProductDatum[] {
+  const map = new Map<string, ProductDatum>()
+  for (const it of items) {
+    const key = it.sku !== '—' ? it.sku : it.productName
+    const cur = map.get(key) ?? { name: it.productName, sku: it.sku, revenue: 0, units: 0 }
+    cur.revenue += it.revenue
+    cur.units += it.qtyPurchased
+    map.set(key, cur)
   }
-  return [...map.values()].sort((a, b) => b.revenue - a.revenue)
+  return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, n)
 }
 
-/** Scatter of units sold vs price (velocity vs positioning). */
-export function velocityScatter(products: Product[]): VelocityDatum[] {
-  return products
-    .filter((p) => p.unitsSold > 0 || p.price > 0)
-    .map((p) => ({
-      name: p.name,
-      sku: p.sku,
-      unitsSold: p.unitsSold,
-      price: p.price,
-      revenue: p.revenue,
-      margin: p.margin,
-    }))
+/** Count + revenue grouped by order status. */
+export function statusBreakdown(items: OrderItem[]): StatusDatum[] {
+  const map = new Map<string, StatusDatum>()
+  for (const it of items) {
+    const cur = map.get(it.status) ?? { status: it.status, count: 0, revenue: 0 }
+    cur.count += 1
+    cur.revenue += it.revenue
+    map.set(it.status, cur)
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count)
 }
 
-/** Top-N products by absolute profit, for the profit-per-item trend line. */
-export function topByProfit(products: Product[], n = 12): ProfitDatum[] {
-  return [...products]
-    .sort((a, b) => b.profit - a.profit)
-    .slice(0, n)
-    .map((p) => ({
-      name: p.name,
-      sku: p.sku,
-      profit: p.profit,
-      margin: p.margin,
-    }))
+/** Revenue + order count grouped by purchase day, sorted chronologically. */
+export function revenueOverTime(items: OrderItem[]): TrendDatum[] {
+  const map = new Map<string, TrendDatum>()
+  for (const it of items) {
+    if (!it.purchaseDate) continue
+    const { key, label, sort } = it.purchaseDate
+    const cur = map.get(key) ?? { key, label, sort, revenue: 0, orders: 0 }
+    cur.revenue += it.revenue
+    cur.orders += 1
+    map.set(key, cur)
+  }
+  return [...map.values()].sort((a, b) => a.sort - b.sort)
+}
+
+/** Revenue by destination (state when available, else country). */
+export function revenueByDestination(items: OrderItem[], n = 8): DestinationDatum[] {
+  const map = new Map<string, DestinationDatum>()
+  for (const it of items) {
+    const dest = it.state || it.country || 'Unknown'
+    const cur = map.get(dest) ?? { destination: dest, revenue: 0, orders: 0 }
+    cur.revenue += it.revenue
+    cur.orders += 1
+    map.set(dest, cur)
+  }
+  return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, n)
 }

@@ -1,107 +1,162 @@
 import * as XLSX from 'xlsx'
 import {
   type ColumnMapping,
+  type FieldKey,
   type Kpis,
+  type OrderItem,
   type ParseResult,
-  type Product,
-  LOW_STOCK_THRESHOLD,
+  type PurchaseDate,
 } from './types'
 
+/* ------------------------------------------------------------------ *
+ * Header detection
+ * ------------------------------------------------------------------ */
+
+/** Normalized candidate header strings, in priority order, per field. */
+const FIELD_HEADERS: Record<FieldKey, string[]> = {
+  orderId: ['orderid'],
+  orderItemId: ['orderitemid'],
+  status: ['orderstatus'],
+  itemStatus: ['orderitemstatus'],
+  fulfillmentMode: ['fulfillmentmode'],
+  productName: ['productname', 'productnamebycustomerorder'],
+  variation: ['variation'],
+  contributionSku: ['contributionsku'],
+  skuId: ['skuid'],
+  qtyPurchased: ['quantitypurchased'],
+  qtyShipped: ['quantityshipped'],
+  qtyToShip: ['quantitytoship'],
+  qtyCanceled: ['quantitycanceled', 'quantitycancelled'],
+  retailPriceTotal: ['retailpricetotal'],
+  goodsBasePrice: ['goodsbaseprice'],
+  activityGoodsBasePrice: ['activitygoodsbaseprice'],
+  shippingCost: ['shippingcost'],
+  taxTotal: ['producttaxtotal'],
+  discountTemu: ['discountfromtemu'],
+  discountSeller: ['discountfromseller'],
+  carrier: ['carrier'],
+  trackingNumber: ['trackingnumber'],
+  settlementStatus: ['ordersettlementstatus', 'settlementstatus'],
+  city: ['shipcity'],
+  state: ['shipstate'],
+  country: ['shipcountry'],
+  purchaseDate: ['purchasedate'],
+}
+
+/** All known header tokens, used to score which row is the header row. */
+const KNOWN_TOKENS = new Set(Object.values(FIELD_HEADERS).flat())
+
+const normalize = (s: unknown): string =>
+  String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
 /**
- * Synonym lists used to map arbitrary spreadsheet headers onto our fields.
- * Headers are normalized (lowercased, non-alphanumerics stripped) before matching.
- * Order matters: more specific fields are matched first so e.g. "unit cost"
- * doesn't get grabbed by the generic "price" bucket.
+ * SheetJS trusts a sheet's stored `!ref`. Temu exports ship a BROKEN range
+ * (e.g. `A1:AV6` when data runs to row 12), which silently drops every order.
+ * Recompute the true bounding range from the populated cells.
  */
-const FIELD_SYNONYMS: Array<{
-  field: keyof ColumnMapping
-  exact: string[]
-  contains: string[]
-}> = [
-  {
-    field: 'sku',
-    exact: ['sku', 'productid', 'itemid', 'id', 'skuid', 'goodsid', 'asin'],
-    contains: ['sku', 'productid', 'itemid', 'goodsid'],
-  },
-  {
-    field: 'name',
-    exact: ['name', 'productname', 'title', 'product', 'item', 'itemname', 'goodsname'],
-    contains: ['productname', 'producttitle', 'itemname', 'goodsname', 'title'],
-  },
-  {
-    field: 'category',
-    exact: ['category', 'cat', 'type', 'department', 'producttype', 'categoryname'],
-    contains: ['category', 'department'],
-  },
-  {
-    field: 'cost',
-    exact: ['cost', 'unitcost', 'cogs', 'costprice', 'buyprice', 'purchaseprice'],
-    contains: ['cost', 'cogs'],
-  },
-  {
-    field: 'revenue',
-    exact: ['revenue', 'totalrevenue', 'totalsales', 'gmv', 'sales', 'salesamount', 'grossrevenue'],
-    contains: ['revenue', 'gmv', 'totalsales', 'salesamount'],
-  },
-  {
-    field: 'unitsSold',
-    exact: [
-      'unitssold',
-      'qtysold',
-      'quantitysold',
-      'sold',
-      'sales',
-      'salesvolume',
-      'orders',
-      'unitsales',
-      'volume',
-    ],
-    contains: ['unitssold', 'qtysold', 'quantitysold', 'salesvolume', 'unitsales', 'orderqty'],
-  },
-  {
-    field: 'price',
-    exact: ['price', 'unitprice', 'sellingprice', 'saleprice', 'listprice', 'retailprice', 'msrp'],
-    contains: ['price'],
-  },
-  {
-    field: 'stock',
-    exact: ['stock', 'inventory', 'quantity', 'qty', 'onhand', 'stockonhand', 'available', 'instock'],
-    contains: ['stock', 'inventory', 'onhand', 'available'],
-  },
-  {
-    field: 'rating',
-    exact: ['rating', 'stars', 'score', 'avgrating', 'reviewscore'],
-    contains: ['rating', 'stars', 'reviewscore'],
-  },
-]
+function fixSheetRange(ws: XLSX.WorkSheet): void {
+  const addrs = Object.keys(ws).filter((k) => !k.startsWith('!'))
+  if (addrs.length === 0) return
+  let minR = Infinity
+  let minC = Infinity
+  let maxR = 0
+  let maxC = 0
+  for (const a of addrs) {
+    const c = XLSX.utils.decode_cell(a)
+    if (c.r < minR) minR = c.r
+    if (c.c < minC) minC = c.c
+    if (c.r > maxR) maxR = c.r
+    if (c.c > maxC) maxC = c.c
+  }
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } })
+}
 
-const normalize = (s: string): string =>
-  String(s).toLowerCase().replace(/[^a-z0-9]/g, '')
+/** Pick the sheet most likely to hold order data. */
+function pickSheet(wb: XLSX.WorkBook): string {
+  const names = wb.SheetNames
+  // Reject obvious non-data sheets (courier lists, instructions).
+  const isJunk = (n: string) => /courier|instruction|guide|readme|help|cover/i.test(n)
+  const preferred = (n: string) => /order|report|sales|transaction|item/i.test(n)
 
-/** Detect which source header maps to each of our fields. */
-export function detectColumns(headers: string[]): ColumnMapping {
-  const mapping: ColumnMapping = {}
-  const used = new Set<string>()
-  const normd = headers.map((h) => ({ raw: h, norm: normalize(h) }))
+  const candidates = names.filter((n) => !isJunk(n))
+  const pool = candidates.length ? candidates : names
 
-  for (const { field, exact, contains } of FIELD_SYNONYMS) {
-    // 1) Prefer an exact normalized match.
-    let hit = normd.find((h) => !used.has(h.raw) && exact.includes(h.norm))
-    // 2) Fall back to a "contains" match.
-    if (!hit) {
-      hit = normd.find(
-        (h) => !used.has(h.raw) && contains.some((c) => h.norm.includes(c)),
-      )
+  // Prefer a name that looks like an order report; otherwise the densest sheet.
+  const byName = pool.find((n) => preferred(n))
+  if (byName) return byName
+
+  let best = pool[0]
+  let bestCells = -1
+  for (const n of pool) {
+    const cells = Object.keys(wb.Sheets[n]).filter((k) => !k.startsWith('!')).length
+    if (cells > bestCells) {
+      bestCells = cells
+      best = n
     }
-    if (hit) {
-      mapping[field] = hit.raw
-      used.add(hit.raw)
+  }
+  return best
+}
+
+/**
+ * Find the header row within the first rows of a sheet. Temu hides it behind a
+ * banner, so we score each candidate row by how many cells match known header
+ * tokens and pick the best (falling back to the row with the most text cells).
+ */
+function findHeaderRow(aoa: unknown[][]): number {
+  const limit = Math.min(aoa.length, 25)
+  let bestRow = 0
+  let bestScore = -1
+  for (let r = 0; r < limit; r++) {
+    const row = aoa[r] ?? []
+    let known = 0
+    let filled = 0
+    for (const cell of row) {
+      const n = normalize(cell)
+      if (!n) continue
+      filled++
+      if (KNOWN_TOKENS.has(n)) known++
+    }
+    // Weight known-token matches heavily; break ties on filled-cell count.
+    const score = known * 100 + filled
+    if (score > bestScore) {
+      bestScore = score
+      bestRow = r
+    }
+  }
+  return bestRow
+}
+
+/** Map detected headers onto our fields. */
+function detectColumns(headers: string[]): ColumnMapping {
+  const mapping: ColumnMapping = {}
+  const used = new Set<number>()
+  const normd = headers.map((h) => normalize(h))
+
+  for (const field of Object.keys(FIELD_HEADERS) as FieldKey[]) {
+    for (const candidate of FIELD_HEADERS[field]) {
+      const idx = normd.findIndex((n, i) => !used.has(i) && n === candidate)
+      if (idx !== -1) {
+        mapping[field] = headers[idx]
+        used.add(idx)
+        break
+      }
     }
   }
   return mapping
 }
 
-/** Coerce arbitrary cell values to a finite number (handles "$1,299.00", "12%"). */
+/* ------------------------------------------------------------------ *
+ * Value coercion
+ * ------------------------------------------------------------------ */
+
+const CURRENCY_SYMBOLS: Array<{ re: RegExp; code: string }> = [
+  { re: /£/, code: 'GBP' },
+  { re: /€/, code: 'EUR' },
+  { re: /\$/, code: 'USD' },
+  { re: /¥|円/, code: 'JPY' },
+]
+
+/** Coerce "£12.79", "-£5.01", "1,234.56", 42 -> finite number. */
 function toNumber(value: unknown): number {
   if (value == null || value === '') return 0
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0
@@ -110,126 +165,228 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
-function toStringSafe(value: unknown): string {
+function toStr(value: unknown): string {
   if (value == null) return ''
   return String(value).trim()
 }
 
-/** Build a normalized Product (with derived metrics) from a raw row. */
-function buildProduct(
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+}
+
+/**
+ * Parse Temu's date strings, e.g. "Jun 18, 2026, 1:04 pm BST(UTC+1)".
+ * We only need day-resolution for the trend chart, so we extract month/day/year
+ * by regex and skip the timezone soup entirely.
+ */
+function parsePurchaseDate(raw: string): PurchaseDate | null {
+  if (!raw) return null
+  const m = raw.match(/([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})/)
+  if (m) {
+    const mon = MONTHS[m[1].slice(0, 3).toLowerCase()]
+    const day = parseInt(m[2], 10)
+    const year = parseInt(m[3], 10)
+    if (mon && day) {
+      const key = `${year}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      const label = `${m[1].slice(0, 3)} ${day}`
+      return { key, label, sort: year * 10000 + mon * 100 + day }
+    }
+  }
+  // ISO-ish fallback (YYYY-MM-DD...)
+  const iso = raw.match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) {
+    const [, y, mo, d] = iso
+    return {
+      key: `${y}-${mo}-${d}`,
+      label: `${mo}/${d}`,
+      sort: +y * 10000 + +mo * 100 + +d,
+    }
+  }
+  return null
+}
+
+function detectCurrency(rows: Array<Record<string, unknown>>, moneyCols: string[]): string {
+  for (const row of rows.slice(0, 50)) {
+    for (const col of moneyCols) {
+      const v = row[col]
+      if (typeof v === 'string') {
+        for (const { re, code } of CURRENCY_SYMBOLS) {
+          if (re.test(v)) return code
+        }
+      }
+    }
+  }
+  return 'USD'
+}
+
+/* ------------------------------------------------------------------ *
+ * Row -> OrderItem
+ * ------------------------------------------------------------------ */
+
+function buildItem(
   raw: Record<string, unknown>,
-  mapping: ColumnMapping,
+  m: ColumnMapping,
   index: number,
-): Product {
-  const get = (field: keyof ColumnMapping): unknown =>
-    mapping[field] ? raw[mapping[field] as string] : undefined
+): OrderItem {
+  const get = (f: FieldKey): unknown => (m[f] ? raw[m[f] as string] : undefined)
 
-  const price = toNumber(get('price'))
-  const cost = toNumber(get('cost'))
-  const unitsSold = toNumber(get('unitsSold'))
-  const stock = toNumber(get('stock'))
-  const ratingRaw = get('rating')
+  const qtyPurchased = toNumber(get('qtyPurchased'))
+  const qtyShipped = toNumber(get('qtyShipped'))
+  const qtyToShip = toNumber(get('qtyToShip'))
+  const qtyCanceled = toNumber(get('qtyCanceled'))
 
-  // Revenue: prefer explicit column, else price * units.
-  const explicitRevenue = toNumber(get('revenue'))
-  const revenue = explicitRevenue > 0 ? explicitRevenue : price * unitsSold
+  // Revenue: retail price total (a line total) is best; fall back to per-unit
+  // prices × quantity.
+  const retail = toNumber(get('retailPriceTotal'))
+  const goodsBase = toNumber(get('goodsBasePrice'))
+  const activityBase = toNumber(get('activityGoodsBasePrice'))
+  const units = qtyPurchased || 1
+  let revenue = retail
+  if (revenue <= 0) revenue = (activityBase || goodsBase) * units
 
-  // Profit: (price - cost) per unit * units sold.
-  const profit = (price - cost) * unitsSold
-  const margin = revenue > 0 ? profit / revenue : 0
+  const discount = toNumber(get('discountTemu')) + toNumber(get('discountSeller'))
 
-  const sku = toStringSafe(get('sku')) || `ROW-${index + 1}`
-  const name = toStringSafe(get('name')) || sku
+  const orderId = toStr(get('orderId')) || `ROW-${index + 1}`
+  const sku = toStr(get('contributionSku')) || toStr(get('skuId'))
+  const status = toStr(get('status')) || toStr(get('itemStatus')) || 'Unknown'
+  const purchaseDateRaw = toStr(get('purchaseDate'))
 
   return {
-    id: `${sku}-${index}`,
-    sku,
-    name,
-    category: toStringSafe(get('category')) || 'Uncategorized',
-    price,
-    cost,
-    unitsSold,
-    stock,
-    rating: ratingRaw == null || ratingRaw === '' ? null : toNumber(ratingRaw),
+    id: `${orderId}-${toStr(get('orderItemId')) || index}`,
+    orderId,
+    orderItemId: toStr(get('orderItemId')),
+    status,
+    fulfillmentMode: toStr(get('fulfillmentMode')),
+    productName: toStr(get('productName')) || sku || orderId,
+    variation: toStr(get('variation')),
+    sku: sku || '—',
+    qtyPurchased,
+    qtyShipped,
+    qtyToShip,
+    qtyCanceled,
     revenue,
-    profit,
-    margin,
-    lowStock: stock > 0 ? stock <= LOW_STOCK_THRESHOLD : false,
+    goodsBasePrice: goodsBase,
+    shippingCost: toNumber(get('shippingCost')),
+    taxTotal: toNumber(get('taxTotal')),
+    discount,
+    carrier: toStr(get('carrier')) || '—',
+    trackingNumber: toStr(get('trackingNumber')),
+    settlementStatus: toStr(get('settlementStatus')),
+    city: toStr(get('city')),
+    state: toStr(get('state')),
+    country: toStr(get('country')) || '—',
+    purchaseDate: parsePurchaseDate(purchaseDateRaw),
+    purchaseDateRaw,
+    awaitingShipment: qtyToShip > 0,
     raw,
   }
 }
 
-function computeKpis(products: Product[]): Kpis {
-  const totalRevenue = products.reduce((s, p) => s + p.revenue, 0)
-  const totalProfit = products.reduce((s, p) => s + p.profit, 0)
-  const unitsSold = products.reduce((s, p) => s + p.unitsSold, 0)
-  const lowStockCount = products.filter((p) => p.lowStock).length
+function computeKpis(items: OrderItem[]): Kpis {
+  const totalRevenue = items.reduce((s, i) => s + i.revenue, 0)
+  const unitsSold = items.reduce((s, i) => s + i.qtyPurchased, 0)
+  const orderIds = new Set(items.map((i) => i.orderId))
+  const awaitingShipment = items.filter((i) => i.awaitingShipment).length
+  const canceledUnits = items.reduce((s, i) => s + i.qtyCanceled, 0)
+  const totalDiscount = items.reduce((s, i) => s + i.discount, 0)
 
   return {
     totalRevenue,
-    totalProfit,
     unitsSold,
-    profitMargin: totalRevenue > 0 ? totalProfit / totalRevenue : 0,
-    lowStockCount,
-    productCount: products.length,
-    avgOrderValue: unitsSold > 0 ? totalRevenue / unitsSold : 0,
+    orderCount: orderIds.size,
+    itemCount: items.length,
+    avgOrderValue: orderIds.size > 0 ? totalRevenue / orderIds.size : 0,
+    awaitingShipment,
+    canceledUnits,
+    totalDiscount,
   }
 }
 
-/**
- * Parse a `.xlsx` / `.xls` file (as an ArrayBuffer) into normalized products,
- * a detected column mapping, and aggregate KPIs.
- */
+/* ------------------------------------------------------------------ *
+ * Public API
+ * ------------------------------------------------------------------ */
+
 export function parseWorkbook(buffer: ArrayBuffer, fileName: string): ParseResult {
   const workbook = XLSX.read(buffer, { type: 'array' })
-  const firstSheetName = workbook.SheetNames[0]
-  if (!firstSheetName) {
+  if (workbook.SheetNames.length === 0) {
     throw new Error('The workbook contains no sheets.')
   }
-  const sheet = workbook.Sheets[firstSheetName]
 
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+  const sheetName = pickSheet(workbook)
+  const sheet = workbook.Sheets[sheetName]
+  fixSheetRange(sheet)
+
+  const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
     defval: '',
-    raw: true,
+    blankrows: false,
   })
-
-  if (rows.length === 0) {
-    throw new Error('The first sheet has no data rows.')
+  if (aoa.length === 0) {
+    throw new Error(`Sheet "${sheetName}" has no rows.`)
   }
 
-  const headers = Object.keys(rows[0])
+  const headerRowIdx = findHeaderRow(aoa)
+  const headers = (aoa[headerRowIdx] ?? []).map((h) => toStr(h))
   const mapping = detectColumns(headers)
 
-  const warnings: string[] = []
-  if (!mapping.price && !mapping.revenue) {
-    warnings.push(
-      'No price or revenue column detected — revenue metrics may read as zero.',
+  if (mapping.orderId == null && mapping.productName == null) {
+    throw new Error(
+      `Could not find an order header row in sheet "${sheetName}". Expected columns like "Order ID" / "product name".`,
     )
   }
-  if (!mapping.unitsSold) {
-    warnings.push('No "units sold" column detected — sales velocity may be incomplete.')
-  }
-  if (!mapping.stock) {
-    warnings.push('No stock/inventory column detected — low-stock alerts are disabled.')
+
+  // Build records keyed by header for the data rows below the header row.
+  const dataRows = aoa.slice(headerRowIdx + 1)
+  const records: Array<Record<string, unknown>> = dataRows
+    .map((row) => {
+      const rec: Record<string, unknown> = {}
+      headers.forEach((h, c) => {
+        if (h) rec[h] = (row as unknown[])[c] ?? ''
+      })
+      return rec
+    })
+    .filter((rec) => Object.values(rec).some((v) => v !== '' && v != null))
+
+  if (records.length === 0) {
+    throw new Error(`Sheet "${sheetName}" has headers but no order rows.`)
   }
 
-  // Drop fully-empty rows.
-  const products = rows
-    .filter((r) => Object.values(r).some((v) => v !== '' && v != null))
-    .map((r, i) => buildProduct(r, mapping, i))
+  const moneyCols = [
+    mapping.retailPriceTotal,
+    mapping.goodsBasePrice,
+    mapping.activityGoodsBasePrice,
+    mapping.shippingCost,
+    mapping.discountTemu,
+  ].filter(Boolean) as string[]
+  const currency = detectCurrency(records, moneyCols)
+
+  const items = records.map((r, i) => buildItem(r, mapping, i))
+
+  const warnings: string[] = []
+  if (!mapping.retailPriceTotal && !mapping.goodsBasePrice && !mapping.activityGoodsBasePrice) {
+    warnings.push('No price/revenue column detected — revenue metrics may read as zero.')
+  }
+  if (!mapping.status && !mapping.itemStatus) {
+    warnings.push('No order-status column detected — status breakdown is unavailable.')
+  }
+  if (!mapping.purchaseDate) {
+    warnings.push('No purchase-date column detected — the sales-over-time trend is hidden.')
+  }
 
   return {
-    products,
-    kpis: computeKpis(products),
+    items,
+    kpis: computeKpis(items),
     mapping,
     headers,
+    sheetName,
     fileName,
-    rowCount: rows.length,
+    rowCount: records.length,
+    currency,
     warnings,
   }
 }
 
-/** Read a File object and parse it. Rejects on read or parse errors. */
 export function parseExcelFile(file: File): Promise<ParseResult> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()

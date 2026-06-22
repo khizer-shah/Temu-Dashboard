@@ -1,6 +1,6 @@
-import { DollarSign, ShoppingBag, Percent, PackageX, type LucideIcon } from 'lucide-react'
+import { DollarSign, ShoppingBag, Receipt, Truck, type LucideIcon } from 'lucide-react'
 import type { Kpis } from '../lib/types'
-import { formatCurrencyCompact, formatCompactNumber, formatPercent, formatNumber } from '../lib/format'
+import { formatCurrencyCompact, formatCompactNumber, formatNumber } from '../lib/format'
 
 interface KpiCardProps {
   label: string
@@ -14,7 +14,6 @@ function KpiCard({ label, value, sub, icon: Icon, tone = 'accent' }: KpiCardProp
   const isWarn = tone === 'warn'
   return (
     <div className="card group relative overflow-hidden p-5">
-      {/* hairline top accent */}
       <div
         className={[
           'absolute inset-x-0 top-0 h-px',
@@ -48,33 +47,37 @@ function KpiCard({ label, value, sub, icon: Icon, tone = 'accent' }: KpiCardProp
   )
 }
 
-export function KpiRibbon({ kpis }: { kpis: Kpis }) {
+export function KpiRibbon({ kpis, currency }: { kpis: Kpis; currency: string }) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <KpiCard
         label="Total Revenue"
-        value={formatCurrencyCompact(kpis.totalRevenue)}
-        sub={`${formatNumber(kpis.productCount)} SKUs · ${formatCurrencyCompact(kpis.avgOrderValue)} avg / unit`}
+        value={formatCurrencyCompact(kpis.totalRevenue, currency)}
+        sub={`${formatNumber(kpis.orderCount)} orders · ${formatNumber(kpis.itemCount)} line items`}
         icon={DollarSign}
       />
       <KpiCard
         label="Sales Units Sold"
         value={formatCompactNumber(kpis.unitsSold)}
-        sub={`${formatCurrencyCompact(kpis.totalProfit)} total profit`}
+        sub={
+          kpis.canceledUnits > 0
+            ? `${formatNumber(kpis.canceledUnits)} units canceled`
+            : 'No cancellations'
+        }
         icon={ShoppingBag}
       />
       <KpiCard
-        label="Profit Margin"
-        value={formatPercent(kpis.profitMargin)}
-        sub="Blended across all revenue"
-        icon={Percent}
+        label="Avg Order Value"
+        value={formatCurrencyCompact(kpis.avgOrderValue, currency)}
+        sub={`${formatCurrencyCompact(kpis.totalDiscount, currency)} total discounts`}
+        icon={Receipt}
       />
       <KpiCard
-        label="Low Stock Alerts"
-        value={formatNumber(kpis.lowStockCount)}
-        sub={kpis.lowStockCount > 0 ? 'SKUs need replenishment' : 'Inventory healthy'}
-        icon={PackageX}
-        tone={kpis.lowStockCount > 0 ? 'warn' : 'accent'}
+        label="Awaiting Shipment"
+        value={formatNumber(kpis.awaitingShipment)}
+        sub={kpis.awaitingShipment > 0 ? 'Order items need shipping' : 'All caught up'}
+        icon={Truck}
+        tone={kpis.awaitingShipment > 0 ? 'warn' : 'accent'}
       />
     </div>
   )

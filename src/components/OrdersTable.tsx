@@ -7,87 +7,123 @@ import {
   ChevronUp,
   Download,
   Search,
-  AlertTriangle,
 } from 'lucide-react'
-import type { Product } from '../lib/types'
+import type { OrderItem } from '../lib/types'
 import { downloadCsv } from '../lib/exportCsv'
-import { formatMoney, formatNumber, formatPercent, formatCurrencyCompact } from '../lib/format'
+import { formatMoney, formatNumber, formatCurrencyCompact } from '../lib/format'
 
 type SortKey =
+  | 'orderId'
+  | 'productName'
   | 'sku'
-  | 'name'
-  | 'category'
-  | 'price'
-  | 'cost'
-  | 'unitsSold'
-  | 'stock'
+  | 'status'
+  | 'qtyPurchased'
   | 'revenue'
-  | 'profit'
-  | 'margin'
+  | 'carrier'
+  | 'country'
+  | 'dateSort'
 type SortDir = 'asc' | 'desc'
+
+const PAGE_SIZE = 10
 
 interface Column {
   key: SortKey
   label: string
   align: 'left' | 'right'
-  render: (p: Product) => React.ReactNode
+  render: (o: OrderItem, currency: string) => React.ReactNode
 }
 
-const PAGE_SIZE = 10
+const STATUS_STYLES: Record<string, string> = {
+  delivered: 'border-accent/30 bg-accent/10 text-accent',
+  shipped: 'border-sky-400/30 bg-sky-400/10 text-sky-300',
+  canceled: 'border-red-400/30 bg-red-400/10 text-red-300',
+  cancelled: 'border-red-400/30 bg-red-400/10 text-red-300',
+  pending: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
+  processing: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
+}
+
+function statusBadge(status: string) {
+  const cls = STATUS_STYLES[status.toLowerCase()] ?? 'border-white/10 bg-surface-700 text-slate-300'
+  return (
+    <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${cls}`}>
+      {status}
+    </span>
+  )
+}
 
 const columns: Column[] = [
-  { key: 'sku', label: 'SKU', align: 'left', render: (p) => <span className="font-mono text-xs text-slate-400">{p.sku}</span> },
   {
-    key: 'name',
+    key: 'orderId',
+    label: 'Order',
+    align: 'left',
+    render: (o) => <span className="font-mono text-xs text-slate-400">{o.orderId}</span>,
+  },
+  {
+    key: 'productName',
     label: 'Product',
     align: 'left',
-    render: (p) => (
-      <div className="flex items-center gap-2">
-        <span className="max-w-[220px] truncate font-medium text-white">{p.name}</span>
-        {p.lowStock && (
-          <span title="Low stock" className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
-            <AlertTriangle className="h-2.5 w-2.5" /> Low
-          </span>
-        )}
+    render: (o) => (
+      <div className="max-w-[260px]">
+        <div className="truncate font-medium text-white" title={o.productName}>
+          {o.productName}
+        </div>
+        {o.variation && <div className="truncate text-xs text-slate-500">{o.variation}</div>}
       </div>
     ),
   },
   {
-    key: 'category',
-    label: 'Category',
+    key: 'sku',
+    label: 'SKU',
     align: 'left',
-    render: (p) => (
-      <span className="rounded-md border border-white/5 bg-surface-700 px-2 py-0.5 text-xs text-slate-300">
-        {p.category}
+    render: (o) => (
+      <span className="rounded-md border border-white/5 bg-surface-700 px-2 py-0.5 font-mono text-xs text-slate-300">
+        {o.sku}
       </span>
     ),
   },
-  { key: 'price', label: 'Price', align: 'right', render: (p) => <span className="tabular-nums text-slate-200">{formatMoney(p.price)}</span> },
-  { key: 'unitsSold', label: 'Units Sold', align: 'right', render: (p) => <span className="tabular-nums text-slate-200">{formatNumber(p.unitsSold)}</span> },
+  { key: 'status', label: 'Status', align: 'left', render: (o) => statusBadge(o.status) },
   {
-    key: 'stock',
-    label: 'Stock',
+    key: 'qtyPurchased',
+    label: 'Qty',
     align: 'right',
-    render: (p) => (
-      <span className={['tabular-nums', p.lowStock ? 'text-amber-400' : 'text-slate-200'].join(' ')}>
-        {formatNumber(p.stock)}
-      </span>
+    render: (o) => <span className="tabular-nums text-slate-200">{formatNumber(o.qtyPurchased)}</span>,
+  },
+  {
+    key: 'revenue',
+    label: 'Revenue',
+    align: 'right',
+    render: (o, currency) => (
+      <span className="tabular-nums text-white">{formatMoney(o.revenue, currency)}</span>
     ),
   },
-  { key: 'revenue', label: 'Revenue', align: 'right', render: (p) => <span className="tabular-nums text-white">{formatCurrencyCompact(p.revenue)}</span> },
-  { key: 'profit', label: 'Profit', align: 'right', render: (p) => <span className="tabular-nums text-accent">{formatCurrencyCompact(p.profit)}</span> },
   {
-    key: 'margin',
-    label: 'Margin',
+    key: 'carrier',
+    label: 'Carrier',
+    align: 'left',
+    render: (o) => <span className="text-slate-300">{o.carrier}</span>,
+  },
+  {
+    key: 'country',
+    label: 'Destination',
+    align: 'left',
+    render: (o) => (
+      <span className="text-slate-400">{[o.city, o.country].filter(Boolean).join(', ') || '—'}</span>
+    ),
+  },
+  {
+    key: 'dateSort',
+    label: 'Purchased',
     align: 'right',
-    render: (p) => {
-      const tone = p.margin >= 0.4 ? 'text-emerald-400' : p.margin >= 0.2 ? 'text-slate-200' : 'text-red-400'
-      return <span className={`tabular-nums ${tone}`}>{formatPercent(p.margin)}</span>
-    },
+    render: (o) => <span className="text-xs text-slate-400">{o.purchaseDate?.label ?? '—'}</span>,
   },
 ]
 
-export function ProductTable({ products }: { products: Product[] }) {
+function sortValue(o: OrderItem, key: SortKey): string | number {
+  if (key === 'dateSort') return o.purchaseDate?.sort ?? 0
+  return o[key as Exclude<SortKey, 'dateSort'>]
+}
+
+export function OrdersTable({ items, currency }: { items: OrderItem[]; currency: string }) {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('revenue')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -95,26 +131,25 @@ export function ProductTable({ products }: { products: Product[] }) {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return products
-    return products.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.sku.toLowerCase().includes(q) ||
-        p.category.toLowerCase().includes(q),
+    if (!q) return items
+    return items.filter(
+      (o) =>
+        o.productName.toLowerCase().includes(q) ||
+        o.sku.toLowerCase().includes(q) ||
+        o.orderId.toLowerCase().includes(q) ||
+        o.status.toLowerCase().includes(q) ||
+        o.country.toLowerCase().includes(q),
     )
-  }, [products, query])
+  }, [items, query])
 
   const sorted = useMemo(() => {
     const arr = [...filtered]
     arr.sort((a, b) => {
-      const av = a[sortKey]
-      const bv = b[sortKey]
+      const av = sortValue(a, sortKey)
+      const bv = sortValue(b, sortKey)
       let cmp: number
-      if (typeof av === 'number' && typeof bv === 'number') {
-        cmp = av - bv
-      } else {
-        cmp = String(av).localeCompare(String(bv))
-      }
+      if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv
+      else cmp = String(av).localeCompare(String(bv))
       return sortDir === 'asc' ? cmp : -cmp
     })
     return arr
@@ -129,7 +164,8 @@ export function ProductTable({ products }: { products: Product[] }) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
       setSortKey(key)
-      setSortDir(key === 'name' || key === 'sku' || key === 'category' ? 'asc' : 'desc')
+      const textCols: SortKey[] = ['orderId', 'productName', 'sku', 'status', 'carrier', 'country']
+      setSortDir(textCols.includes(key) ? 'asc' : 'desc')
     }
     setPage(0)
   }
@@ -139,12 +175,16 @@ export function ProductTable({ products }: { products: Product[] }) {
 
   return (
     <div className="card overflow-hidden">
-      {/* Toolbar */}
       <div className="flex flex-col gap-3 border-b border-white/5 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h3 className="text-sm font-medium text-white">Product Catalog</h3>
+          <h3 className="text-sm font-medium text-white">Order Line Items</h3>
           <p className="text-xs text-slate-500">
-            {formatNumber(sorted.length)} of {formatNumber(products.length)} SKUs
+            {formatNumber(sorted.length)} of {formatNumber(items.length)} items ·{' '}
+            {formatCurrencyCompact(
+              sorted.reduce((s, o) => s + o.revenue, 0),
+              currency,
+            )}{' '}
+            shown
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -156,8 +196,8 @@ export function ProductTable({ products }: { products: Product[] }) {
                 setQuery(e.target.value)
                 setPage(0)
               }}
-              placeholder="Search SKU, name, category…"
-              className="w-full rounded-lg border border-white/10 bg-surface-800 py-2 pl-9 pr-3 text-sm text-white placeholder:text-slate-600 focus:border-accent/50 focus:outline-none focus:ring-1 focus:ring-accent/30 sm:w-64"
+              placeholder="Search order, product, SKU, status…"
+              className="w-full rounded-lg border border-white/10 bg-surface-800 py-2 pl-9 pr-3 text-sm text-white placeholder:text-slate-600 focus:border-accent/50 focus:outline-none focus:ring-1 focus:ring-accent/30 sm:w-72"
             />
           </div>
           <button
@@ -171,9 +211,8 @@ export function ProductTable({ products }: { products: Product[] }) {
         </div>
       </div>
 
-      {/* Table */}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[860px] border-collapse text-sm">
+        <table className="w-full min-w-[920px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-white/5">
               {columns.map((col) => {
@@ -212,17 +251,14 @@ export function ProductTable({ products }: { products: Product[] }) {
             </tr>
           </thead>
           <tbody>
-            {pageRows.map((p) => (
-              <tr
-                key={p.id}
-                className="border-b border-white/[0.03] transition-colors hover:bg-white/[0.02]"
-              >
+            {pageRows.map((o) => (
+              <tr key={o.id} className="border-b border-white/[0.03] transition-colors hover:bg-white/[0.02]">
                 {columns.map((col) => (
                   <td
                     key={col.key}
                     className={['px-4 py-3', col.align === 'right' ? 'text-right' : 'text-left'].join(' ')}
                   >
-                    {col.render(p)}
+                    {col.render(o, currency)}
                   </td>
                 ))}
               </tr>
@@ -230,7 +266,7 @@ export function ProductTable({ products }: { products: Product[] }) {
             {pageRows.length === 0 && (
               <tr>
                 <td colSpan={columns.length} className="px-4 py-12 text-center text-sm text-slate-500">
-                  No products match “{query}”.
+                  No order items match “{query}”.
                 </td>
               </tr>
             )}
@@ -238,7 +274,6 @@ export function ProductTable({ products }: { products: Product[] }) {
         </table>
       </div>
 
-      {/* Pagination */}
       <div className="flex items-center justify-between border-t border-white/5 px-4 py-3">
         <p className="text-xs text-slate-500">
           {rangeStart}–{rangeEnd} of {formatNumber(sorted.length)}

@@ -1,72 +1,123 @@
-// Domain types for the Temu Product Analysis Dashboard.
+// Domain types for the Temu Order Analysis Dashboard.
+//
+// Real Temu exports are ORDER line-item reports (one row per order item), not a
+// product catalog. There is no cost/COGS or stock column, so we model what the
+// data actually contains: revenue, quantities, status, dates, carrier, destination.
 
-/** A single normalized product row after parsing + metric derivation. */
-export interface Product {
+/** A single normalized order line item after parsing. */
+export interface OrderItem {
   id: string
+  orderId: string
+  orderItemId: string
+  /** Order-level status, e.g. "Shipped", "Delivered", "Canceled". */
+  status: string
+  fulfillmentMode: string
+
+  productName: string
+  variation: string
+  /** Seller SKU (contribution sku) when present, else Temu's numeric SKU ID. */
   sku: string
-  name: string
-  category: string
-  /** Selling price per unit. */
-  price: number
-  /** Cost (COGS) per unit. */
-  cost: number
-  /** Units sold over the reporting period. */
-  unitsSold: number
-  /** Units currently on hand. */
-  stock: number
-  rating: number | null
 
-  // --- Derived metrics ---
-  /** price * unitsSold (or an explicit revenue column when present). */
+  qtyPurchased: number
+  qtyShipped: number
+  qtyToShip: number
+  qtyCanceled: number
+
+  /** Line revenue (retail price total, or goods base price × qty as fallback). */
   revenue: number
-  /** (price - cost) * unitsSold. */
-  profit: number
-  /** profit / revenue, 0..1. */
-  margin: number
-  /** Whether stock is at/below the low-stock threshold. */
-  lowStock: boolean
+  goodsBasePrice: number
+  shippingCost: number
+  taxTotal: number
+  /** Combined discounts (Temu + seller), typically negative. */
+  discount: number
 
-  /** Raw original row, kept for transparency / debugging. */
+  carrier: string
+  trackingNumber: string
+  settlementStatus: string
+
+  /** Destination, best-effort. */
+  city: string
+  state: string
+  country: string
+
+  /** Parsed purchase date (null if unparseable). */
+  purchaseDate: PurchaseDate | null
+  purchaseDateRaw: string
+
+  /** True when the item still needs shipping (actionable alert). */
+  awaitingShipment: boolean
+
+  /** Raw original row, kept for transparency / CSV export. */
   raw: Record<string, unknown>
 }
 
-/** Aggregate KPIs across the whole dataset. */
+export interface PurchaseDate {
+  /** Sortable key, YYYY-MM-DD. */
+  key: string
+  /** Short display label, e.g. "Jun 18". */
+  label: string
+  /** Numeric sort value (year*10000 + month*100 + day). */
+  sort: number
+}
+
+/** Aggregate KPIs across the dataset. */
 export interface Kpis {
   totalRevenue: number
-  totalProfit: number
   unitsSold: number
-  /** Blended profit margin across all revenue, 0..1. */
-  profitMargin: number
-  lowStockCount: number
-  productCount: number
+  /** Distinct Order IDs (an order can span several line items). */
+  orderCount: number
+  itemCount: number
   avgOrderValue: number
+  awaitingShipment: number
+  canceledUnits: number
+  totalDiscount: number
 }
 
-/** Result of detecting which source columns map to which fields. */
-export interface ColumnMapping {
-  sku?: string
-  name?: string
-  category?: string
-  price?: string
-  cost?: string
-  unitsSold?: string
-  stock?: string
-  revenue?: string
-  rating?: string
-}
+/** Which source columns mapped to which field. */
+export type FieldKey =
+  | 'orderId'
+  | 'orderItemId'
+  | 'status'
+  | 'itemStatus'
+  | 'fulfillmentMode'
+  | 'productName'
+  | 'variation'
+  | 'contributionSku'
+  | 'skuId'
+  | 'qtyPurchased'
+  | 'qtyShipped'
+  | 'qtyToShip'
+  | 'qtyCanceled'
+  | 'retailPriceTotal'
+  | 'goodsBasePrice'
+  | 'activityGoodsBasePrice'
+  | 'shippingCost'
+  | 'taxTotal'
+  | 'discountTemu'
+  | 'discountSeller'
+  | 'carrier'
+  | 'trackingNumber'
+  | 'settlementStatus'
+  | 'city'
+  | 'state'
+  | 'country'
+  | 'purchaseDate'
+
+export type ColumnMapping = Partial<Record<FieldKey, string>>
 
 export interface ParseResult {
-  products: Product[]
+  items: OrderItem[]
   kpis: Kpis
   mapping: ColumnMapping
   /** Source column headers detected in the file. */
   headers: string[]
+  /** Sheet that was used. */
+  sheetName: string
   /** Original file name. */
   fileName: string
-  /** Rows that were present in the sheet (including any skipped). */
   rowCount: number
-  /** Non-fatal notes surfaced to the user (e.g. unmapped columns). */
+  /** ISO currency code detected from the data ("GBP", "USD", "EUR"). */
+  currency: string
+  /** Non-fatal notes surfaced to the user. */
   warnings: string[]
 }
-
-export const LOW_STOCK_THRESHOLD = 10
