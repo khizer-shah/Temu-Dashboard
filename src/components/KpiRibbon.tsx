@@ -1,6 +1,6 @@
-import { DollarSign, ShoppingBag, Receipt, Truck, type LucideIcon } from 'lucide-react'
-import type { Kpis } from '../lib/types'
-import { formatCurrencyCompact, formatCompactNumber, formatNumber } from '../lib/format'
+import { DollarSign, ShoppingBag, TrendingUp, Truck, type LucideIcon } from 'lucide-react'
+import type { CostedKpis } from '../lib/costModel'
+import { formatCurrencyCompact, formatCompactNumber, formatNumber, formatPercent } from '../lib/format'
 
 interface KpiCardProps {
   label: string
@@ -23,9 +23,7 @@ function KpiCard({ label, value, sub, icon: Icon, tone = 'accent' }: KpiCardProp
         ].join(' ')}
       />
       <div className="flex items-start justify-between">
-        <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
-          {label}
-        </span>
+        <span className="text-xs font-medium uppercase tracking-wider text-slate-500">{label}</span>
         <span
           className={[
             'flex h-9 w-9 items-center justify-center rounded-xl border transition-colors',
@@ -38,16 +36,16 @@ function KpiCard({ label, value, sub, icon: Icon, tone = 'accent' }: KpiCardProp
         </span>
       </div>
       <div className="mt-4">
-        <div className="text-3xl font-semibold tracking-tight text-white tabular-nums">
-          {value}
-        </div>
+        <div className="text-3xl font-semibold tracking-tight text-white tabular-nums">{value}</div>
         <div className="mt-1 text-xs text-slate-500">{sub}</div>
       </div>
     </div>
   )
 }
 
-export function KpiRibbon({ kpis, currency }: { kpis: Kpis; currency: string }) {
+export function KpiRibbon({ kpis, currency }: { kpis: CostedKpis; currency: string }) {
+  const hasCosts = kpis.costedItems > 0
+
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <KpiCard
@@ -60,18 +58,29 @@ export function KpiRibbon({ kpis, currency }: { kpis: Kpis; currency: string }) 
         label="Sales Units Sold"
         value={formatCompactNumber(kpis.unitsSold)}
         sub={
-          kpis.canceledUnits > 0
-            ? `${formatNumber(kpis.canceledUnits)} units canceled`
-            : 'No cancellations'
+          kpis.canceledUnits > 0 ? `${formatNumber(kpis.canceledUnits)} units canceled` : 'No cancellations'
         }
         icon={ShoppingBag}
       />
-      <KpiCard
-        label="Avg Order Value"
-        value={formatCurrencyCompact(kpis.avgOrderValue, currency)}
-        sub={`${formatCurrencyCompact(kpis.totalDiscount, currency)} total discounts`}
-        icon={Receipt}
-      />
+      {/* Net Profit replaces AOV once any cost is reconciled. */}
+      {hasCosts ? (
+        <KpiCard
+          label="Net Profit"
+          value={formatCurrencyCompact(kpis.netProfit, currency)}
+          sub={`${formatPercent(kpis.profitMargin ?? 0)} margin · ${formatNumber(kpis.costedItems)}/${formatNumber(
+            kpis.itemCount,
+          )} costed`}
+          icon={TrendingUp}
+          tone={kpis.netProfit < 0 ? 'warn' : 'accent'}
+        />
+      ) : (
+        <KpiCard
+          label="Avg Order Value"
+          value={formatCurrencyCompact(kpis.avgOrderValue, currency)}
+          sub="Upload invoices to unlock net profit"
+          icon={TrendingUp}
+        />
+      )}
       <KpiCard
         label="Awaiting Shipment"
         value={formatNumber(kpis.awaitingShipment)}

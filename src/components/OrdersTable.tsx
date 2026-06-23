@@ -8,9 +8,9 @@ import {
   Download,
   Search,
 } from 'lucide-react'
-import type { OrderItem } from '../lib/types'
+import type { CostedItem } from '../lib/costModel'
 import { downloadCsv } from '../lib/exportCsv'
-import { formatMoney, formatNumber, formatCurrencyCompact } from '../lib/format'
+import { formatMoney, formatNumber, formatCurrencyCompact, formatPercent } from '../lib/format'
 
 type SortKey =
   | 'orderId'
@@ -19,6 +19,7 @@ type SortKey =
   | 'status'
   | 'qtyPurchased'
   | 'revenue'
+  | 'netProfit'
   | 'carrier'
   | 'country'
   | 'dateSort'
@@ -30,7 +31,7 @@ interface Column {
   key: SortKey
   label: string
   align: 'left' | 'right'
-  render: (o: OrderItem, currency: string) => React.ReactNode
+  render: (o: CostedItem, currency: string) => React.ReactNode
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -97,6 +98,25 @@ const columns: Column[] = [
     ),
   },
   {
+    key: 'netProfit',
+    label: 'Net Profit',
+    align: 'right',
+    render: (o, currency) => {
+      if (!o.hasCost || o.netProfit == null) {
+        return <span className="text-xs text-slate-600" title="No invoice cost matched">—</span>
+      }
+      const tone = o.netProfit < 0 ? 'text-red-400' : 'text-accent'
+      return (
+        <span className={`tabular-nums ${tone}`} title={`Unit cost ${formatMoney(o.unitCost ?? 0, currency)}`}>
+          {formatMoney(o.netProfit, currency)}
+          {o.margin != null && (
+            <span className="ml-1 text-[10px] text-slate-500">{formatPercent(o.margin, 0)}</span>
+          )}
+        </span>
+      )
+    },
+  },
+  {
     key: 'carrier',
     label: 'Carrier',
     align: 'left',
@@ -118,12 +138,13 @@ const columns: Column[] = [
   },
 ]
 
-function sortValue(o: OrderItem, key: SortKey): string | number {
+function sortValue(o: CostedItem, key: SortKey): string | number {
   if (key === 'dateSort') return o.purchaseDate?.sort ?? 0
-  return o[key as Exclude<SortKey, 'dateSort'>]
+  if (key === 'netProfit') return o.netProfit ?? Number.NEGATIVE_INFINITY
+  return o[key as Exclude<SortKey, 'dateSort' | 'netProfit'>]
 }
 
-export function OrdersTable({ items, currency }: { items: OrderItem[]; currency: string }) {
+export function OrdersTable({ items, currency }: { items: CostedItem[]; currency: string }) {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('revenue')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -212,7 +233,7 @@ export function OrdersTable({ items, currency }: { items: OrderItem[]; currency:
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[920px] border-collapse text-sm">
+        <table className="w-full min-w-[1040px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-white/5">
               {columns.map((col) => {

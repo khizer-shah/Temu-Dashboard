@@ -14,7 +14,7 @@ import {
   YAxis,
 } from 'recharts'
 import { BarChart3, PieChart as PieIcon, TrendingUp } from 'lucide-react'
-import type { OrderItem } from '../lib/types'
+import type { CostedItem } from '../lib/costModel'
 import {
   topProductsByRevenue,
   statusBreakdown,
@@ -54,7 +54,7 @@ function truncate(s: string, n = 32): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s
 }
 
-export function ChartsGrid({ items, currency }: { items: OrderItem[]; currency: string }) {
+export function ChartsGrid({ items, currency }: { items: CostedItem[]; currency: string }) {
   const products = useMemo(() => topProductsByRevenue(items, 8), [items])
   const statuses = useMemo(() => statusBreakdown(items), [items])
   const trend = useMemo(() => revenueOverTime(items), [items])
