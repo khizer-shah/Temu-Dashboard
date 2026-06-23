@@ -8,7 +8,16 @@
       "Bash(git rev-list *)",
       "Bash(git fetch *)",
       "Bash(git ls-tree *)",
-      "Bash(grep -E \"^\\(api|prisma\\)$\")"
+      "Bash(grep -E \"^\\(api|prisma\\)$\")",
+      "Bash(curl -s -m 25 -o /tmp/resp.txt -w \"HTTP %{http_code}\\\\n\" https://temu-dashboard-xi.vercel.app/api/accounts)",
+      "Read(//tmp/**)",
+      "Bash(curl -s -m 25 -o /dev/null -w \"HTTP %{http_code}\\\\n\" https://temu-dashboard-xi.vercel.app/)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(git push *)",
+      "Bash(curl -s -i -m 20 https://temu-dashboard-xi.vercel.app/api/health)",
+      "Bash(curl -s -m 20 -o /tmp/h2.txt -w \"HTTP %{http_code}\\\\n\" \"https://temu-dashboard-xi.vercel.app/api/health?t=$\\(date +%s\\)\")",
+      "Bash(git commit -q -m 'Add zero-dependency /api/ping to isolate function crash *)"
     ]
   }
 }
