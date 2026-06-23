@@ -122,23 +122,33 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  // Initial hydrate from IndexedDB.
+  // Initial hydrate from the cloud API.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [accs, costs, prods] = await Promise.all([
-        db.getAccounts(),
-        db.getCostRegistry(),
-        db.getProducts(),
-      ])
-      if (cancelled) return
-      setAccounts(accs)
-      setCostRegistry(costs)
-      setProducts(prods)
-      const stored = localStorage.getItem(LS_ACTIVE)
-      const initial = accs.find((a) => a.id === stored)?.id ?? accs[0]?.id ?? null
-      setActiveAccountId(initial)
-      setReady(true)
+      try {
+        const [accs, costs, prods] = await Promise.all([
+          db.getAccounts(),
+          db.getCostRegistry(),
+          db.getProducts(),
+        ])
+        if (cancelled) return
+        setAccounts(accs)
+        setCostRegistry(costs)
+        setProducts(prods)
+        const stored = localStorage.getItem(LS_ACTIVE)
+        const initial = accs.find((a) => a.id === stored)?.id ?? accs[0]?.id ?? null
+        setActiveAccountId(initial)
+      } catch (err) {
+        // Don't spin forever if the backend is unreachable — surface the error
+        // and let the app render so the user isn't stuck on a blank loader.
+        if (cancelled) return
+        setNotice(
+          `Couldn't reach the cloud database. ${err instanceof Error ? err.message : ''} — check Vercel env vars / function logs.`,
+        )
+      } finally {
+        if (!cancelled) setReady(true)
+      }
     })()
     return () => {
       cancelled = true

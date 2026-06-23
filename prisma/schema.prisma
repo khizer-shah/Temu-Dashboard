@@ -13,6 +13,10 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Vercel's Node serverless runtime is Amazon Linux (OpenSSL 3.0.x on Node 20/22,
+  // 1.0.x on older). Generate those engines too, not just the local "native" one,
+  // or the function crashes at startup with FUNCTION_INVOCATION_FAILED.
+  binaryTargets = ["native", "rhel-openssl-3.0.x", "rhel-openssl-1.0.x"]
 }
 
 datasource db {
