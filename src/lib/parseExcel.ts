@@ -165,9 +165,40 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+/**
+ * Coerce an arbitrary cell value to a CLEAN scalar string.
+ *
+ * Guards the `[object Object]` / `"a,b,c"` bug: if a cell arrives as a nested
+ * object or an array block (e.g. a duplicated/merged column, or a SheetJS cell
+ * object), we isolate the first meaningful scalar instead of blindly
+ * `String(value)`-ing the whole structure into the SKU/name fields.
+ */
 function toStr(value: unknown): string {
   if (value == null) return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value).trim()
+  }
+  if (value instanceof Date) return value.toISOString()
+  if (Array.isArray(value)) {
+    const first = value.find((v) => v != null && v !== '')
+    return first == null ? '' : toStr(first)
+  }
+  if (typeof value === 'object') {
+    // SheetJS cell objects expose the formatted/raw value on `.w`/`.v`.
+    const cell = value as { w?: unknown; v?: unknown }
+    if (cell.w != null) return toStr(cell.w)
+    if (cell.v != null) return toStr(cell.v)
+    const first = Object.values(value as Record<string, unknown>).find((v) => v != null && v !== '')
+    return first == null ? '' : toStr(first)
+  }
   return String(value).trim()
+}
+
+/** True when an order status means the order was canceled (US/UK spellings). */
+function isCanceledStatus(status: string): boolean {
+  const s = status.trim().toLowerCase()
+  return s === 'canceled' || s === 'cancelled'
 }
 
 const MONTHS: Record<string, number> = {
@@ -361,7 +392,12 @@ export function parseWorkbook(buffer: ArrayBuffer, fileName: string): ParseResul
   ].filter(Boolean) as string[]
   const currency = detectCurrency(records, moneyCols)
 
-  const items = records.map((r, i) => buildItem(r, mapping, i))
+  const allItems = records.map((r, i) => buildItem(r, mapping, i))
+
+  // Strict canceled-order safeguard: rows whose `order status` is "Canceled"
+  // must NEVER reach IndexedDB or analytics. Drop them up front.
+  const items = allItems.filter((it) => !isCanceledStatus(it.status))
+  const skippedCanceled = allItems.length - items.length
 
   const warnings: string[] = []
   if (!mapping.retailPriceTotal && !mapping.goodsBasePrice && !mapping.activityGoodsBasePrice) {
@@ -382,6 +418,7 @@ export function parseWorkbook(buffer: ArrayBuffer, fileName: string): ParseResul
     sheetName,
     fileName,
     rowCount: records.length,
+    skippedCanceled,
     currency,
     warnings,
   }

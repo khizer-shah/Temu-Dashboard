@@ -8,10 +8,14 @@ import {
   type ReactNode,
 } from 'react'
 import * as db from '../lib/db'
-import type { AccountRecord, CostEntry, StoredOrderItem } from '../lib/db'
+import type { AccountRecord, CostEntry, ProductRecord, StoredOrderItem } from '../lib/db'
 import { parseExcelFile } from '../lib/parseExcel'
 import { extractInvoiceFiles, type BulkInvoiceResult, type ExtractedCost } from '../lib/invoiceExtract'
-import { applyCosts, buildCostMap, computeCostedKpis, skuKey, type CostedItem, type CostedKpis } from '../lib/costModel'
+import { applyCosts, buildCostMap, computeCostedKpis, normSku, skuKey, type CostedItem, type CostedKpis } from '../lib/costModel'
+
+/** Default supplier markup: target retail = cost × 1.20 (20% markup). */
+export const DEFAULT_MARKUP = 1.2
+const round2 = (n: number) => Math.round(n * 100) / 100
 
 /** A stable id generator that does not use Math.random (sandbox-safe). */
 let idCounter = 0
@@ -28,10 +32,14 @@ export interface ActiveDataset {
   currency: string
 }
 
-/** A reviewable extracted cost row, augmented with how many active items match. */
+/** A reviewable extracted product row for the "Load Products" modal. */
 export interface ReviewRow extends ExtractedCost {
   /** Stable row id for the review UI. */
   rowId: string
+  /** Product name/description (always present for the UI). */
+  productName: string
+  /** Target retail price = costPrice × markup, editable before commit. */
+  targetListingPrice: number
   /** How many of the active account's items this SKU would reconcile. */
   matchCount: number
   /** Whether the user has it selected to commit. */
@@ -43,6 +51,8 @@ export interface InvoicePreview {
   perFile: BulkInvoiceResult['perFile']
   totalFiles: number
   okFiles: number
+  /** How many rows were auto-priced from the invoices (rest need manual entry). */
+  hydrated: number
 }
 
 export interface BulkProgress {
@@ -57,6 +67,8 @@ interface StoreState {
   activeAccountId: string | null
   activeAccount: AccountRecord | null
   costRegistry: CostEntry[]
+  /** Global product catalog registered from supplier invoices. */
+  products: ProductRecord[]
   dataset: ActiveDataset | null
   /** Transient status for uploads. */
   busy: boolean
@@ -72,12 +84,13 @@ interface StoreActions {
   /** Upload a Temu order sheet under the active account; persists rows. */
   ingestOrderSheet: (file: File) => Promise<void>
   /**
-   * Extract costs from one or more invoice files WITHOUT committing them.
-   * Returns a preview for the review modal (rows + per-file diagnostics).
+   * Extract products (SKU + name + cost, with a 20% target retail price) from
+   * one or more invoice files WITHOUT committing them. Returns a preview for the
+   * "Load Products" review modal.
    */
   previewInvoices: (files: File[]) => Promise<InvoicePreview>
-  /** Persist the chosen reviewed cost rows into the global registry + reconcile. */
-  commitCostRows: (rows: ReviewRow[]) => Promise<{ matched: number; committed: number }>
+  /** Persist the chosen reviewed products to IndexedDB + reconcile sales in real time. */
+  commitProducts: (rows: ReviewRow[]) => Promise<{ matched: number; committed: number }>
   clearNotice: () => void
 }
 
@@ -103,6 +116,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [accounts, setAccounts] = useState<AccountRecord[]>([])
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null)
   const [costRegistry, setCostRegistry] = useState<CostEntry[]>([])
+  const [products, setProducts] = useState<ProductRecord[]>([])
   const [items, setItems] = useState<StoredOrderItem[]>([])
   const [busy, setBusy] = useState(false)
   const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null)
@@ -112,10 +126,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [accs, costs] = await Promise.all([db.getAccounts(), db.getCostRegistry()])
+      const [accs, costs, prods] = await Promise.all([
+        db.getAccounts(),
+        db.getCostRegistry(),
+        db.getProducts(),
+      ])
       if (cancelled) return
       setAccounts(accs)
       setCostRegistry(costs)
+      setProducts(prods)
       const stored = localStorage.getItem(LS_ACTIVE)
       const initial = accs.find((a) => a.id === stored)?.id ?? accs[0]?.id ?? null
       setActiveAccountId(initial)
@@ -186,8 +205,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await db.putAccount(updated)
           setAccounts((prev) => prev.map((a) => (a.id === acc.id ? updated : a)))
         }
+        const canceledNote =
+          result.skippedCanceled > 0 ? ` · skipped ${result.skippedCanceled} canceled` : ''
         setNotice(
-          `Imported ${result.items.length} order items from “${file.name}” (sheet “${result.sheetName}”).`,
+          `Imported ${result.items.length} order items from “${file.name}” (sheet “${result.sheetName}”)${canceledNote}.`,
         )
       } finally {
         setBusy(false)
@@ -201,27 +222,71 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setBusy(true)
       setBulkProgress({ done: 0, total: files.length, fileName: files[0]?.name ?? '' })
       try {
-        const bulk = await extractInvoiceFiles(files, (done, total, fileName) =>
-          setBulkProgress({ done, total, fileName }),
+        // MASTER BLUEPRINT: the Temu sheet is the source of truth. Build one entry
+        // per unique `contribution sku` (numeric Temu IDs excluded), carrying a
+        // representative product name and how many sales items it reconciles.
+        const masterMap = new Map<string, { sku: string; productName: string; matchCount: number }>()
+        for (const it of items) {
+          const key = normSku(it.sku)
+          if (!key || !/[A-Z]/.test(key)) continue
+          const cur = masterMap.get(key)
+          if (cur) cur.matchCount += 1
+          else masterMap.set(key, { sku: it.sku.trim(), productName: it.productName || '', matchCount: 1 })
+        }
+        const validTemuSkus = new Set(masterMap.keys())
+
+        const bulk = await extractInvoiceFiles(
+          files,
+          (done, total, fileName) => setBulkProgress({ done, total, fileName }),
+          validTemuSkus.size > 0 ? validTemuSkus : undefined,
         )
 
-        // Count, per extracted SKU, how many active-account items it reconciles.
-        const itemKeys = items.map((it) => skuKey(it.sku))
-        const rows: ReviewRow[] = bulk.costs.map((c, i) => {
-          const key = skuKey(c.sku)
-          const matchCount = itemKeys.filter((k) => k === key).length
-          return {
-            ...c,
-            rowId: `${key}-${i}`,
-            matchCount,
-            // Pre-select rows that actually match something in this store.
-            selected: matchCount > 0,
-          }
-        })
-        // Show matched rows first, then by extraction confidence.
-        rows.sort((a, b) => b.matchCount - a.matchCount)
+        // Index whatever costs the invoices yielded, keyed by normalized SKU.
+        const foundCost = new Map<string, ExtractedCost>()
+        for (const c of bulk.costs) foundCost.set(normSku(c.sku), c)
 
-        return { rows, perFile: bulk.perFile, totalFiles: bulk.totalFiles, okFiles: bulk.okFiles }
+        let rows: ReviewRow[]
+        if (masterMap.size > 0) {
+          // SHEET-DRIVEN: emit a row for EVERY master SKU so all of them are always
+          // visible. Hydrate the cost from the invoices when found; otherwise leave
+          // it at 0 for the user to type in manually (the row stays put either way).
+          rows = [...masterMap.values()].map((m, i) => {
+            const key = normSku(m.sku)
+            const hit = foundCost.get(key)
+            const unitCost = hit && hit.unitCost > 0 ? hit.unitCost : 0
+            return {
+              sku: m.sku,
+              productName: hit?.productName || m.productName || '',
+              currency: hit?.currency,
+              source: hit?.source ?? 'sheet',
+              method: hit?.method,
+              unitCost,
+              rowId: `${key}-${i}`,
+              targetListingPrice: round2(unitCost * DEFAULT_MARKUP),
+              matchCount: m.matchCount,
+              // Auto-select only rows we could price; price-less rows stay visible
+              // and editable, and select themselves once a cost is typed.
+              selected: unitCost > 0,
+            }
+          })
+        } else {
+          // Fallback (no Temu sheet loaded yet): drive from the invoice findings.
+          rows = bulk.costs.map((c, i) => ({
+            ...c,
+            rowId: `${normSku(c.sku)}-${i}`,
+            productName: c.productName ?? '',
+            targetListingPrice: round2(c.unitCost * DEFAULT_MARKUP),
+            matchCount: 0,
+            selected: c.unitCost > 0,
+          }))
+        }
+        // Priced rows first, then alphabetical for a stable order.
+        rows.sort(
+          (a, b) => Number(b.unitCost > 0) - Number(a.unitCost > 0) || a.sku.localeCompare(b.sku),
+        )
+
+        const hydrated = rows.filter((r) => r.unitCost > 0).length
+        return { rows, perFile: bulk.perFile, totalFiles: bulk.totalFiles, okFiles: bulk.okFiles, hydrated }
       } finally {
         setBusy(false)
         setBulkProgress(null)
@@ -230,30 +295,50 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [items],
   )
 
-  const commitCostRows = useCallback(
+  const commitProducts = useCallback(
     async (rows: ReviewRow[]) => {
       const chosen = rows.filter((r) => r.selected && Number.isFinite(r.unitCost) && r.unitCost > 0)
       if (chosen.length === 0) {
-        setNotice('No cost rows selected — nothing committed.')
+        setNotice('No products selected — nothing committed.')
         return { matched: 0, committed: 0 }
       }
       const now = Date.now()
-      const entries: CostEntry[] = chosen.map((c) => ({
+      // Write the rich product catalog...
+      const productRecords: ProductRecord[] = chosen.map((c) => ({
         skuKey: skuKey(c.sku),
-        sku: c.sku,
+        sku: c.sku.trim(),
+        productName: (c.productName || c.sku).trim(),
+        costPrice: c.unitCost,
+        targetListingPrice: Number.isFinite(c.targetListingPrice)
+          ? c.targetListingPrice
+          : round2(c.unitCost * DEFAULT_MARKUP),
+        currency: c.currency,
+        source: c.source ?? 'invoice',
+        updatedAt: now,
+      }))
+      // ...and mirror cost into the reconciliation ledger so sales profit updates.
+      const costEntries: CostEntry[] = chosen.map((c) => ({
+        skuKey: skuKey(c.sku),
+        sku: c.sku.trim(),
         unitCost: c.unitCost,
         currency: c.currency,
         source: c.source ?? 'invoice',
         updatedAt: now,
       }))
-      await db.saveCostEntries(entries)
-      const fresh = await db.getCostRegistry()
-      setCostRegistry(fresh)
+      await Promise.all([db.saveProducts(productRecords), db.saveCostEntries(costEntries)])
+      const [freshCosts, freshProducts] = await Promise.all([db.getCostRegistry(), db.getProducts()])
+      setCostRegistry(freshCosts)
+      setProducts(freshProducts)
 
-      const keys = new Set(entries.map((e) => e.skuKey))
-      const matched = items.filter((it) => keys.has(skuKey(it.sku))).length
-      setNotice(`Committed ${entries.length} cost${entries.length === 1 ? '' : 's'} · ${matched} item(s) reconciled.`)
-      return { matched, committed: entries.length }
+      // Reconcile count uses the same cross-reference rules as the dashboard.
+      // Reconcile count — STRICT SKU match only (no product-name fallback).
+      const keys = new Set(chosen.map((c) => normSku(c.sku)).filter(Boolean))
+      const matched = items.filter((it) => keys.has(normSku(it.sku))).length
+
+      setNotice(
+        `Saved ${productRecords.length} product${productRecords.length === 1 ? '' : 's'} · ${matched} sales item(s) reconciled.`,
+      )
+      return { matched, committed: productRecords.length }
     },
     [items],
   )
@@ -283,6 +368,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     activeAccountId,
     activeAccount,
     costRegistry,
+    products,
     dataset,
     busy,
     bulkProgress,
@@ -292,7 +378,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     deleteAccount,
     ingestOrderSheet,
     previewInvoices,
-    commitCostRows,
+    commitProducts,
     clearNotice,
   }
 

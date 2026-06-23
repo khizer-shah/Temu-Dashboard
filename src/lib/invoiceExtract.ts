@@ -9,10 +9,12 @@
 //
 // Output is a list of {sku, unitCost} pairs the caller folds into costRegistry.
 import * as XLSX from 'xlsx'
-import { skuKey } from './costModel'
+import { skuKey, normSku } from './costModel'
 
 export interface ExtractedCost {
   sku: string
+  /** Best-effort product name / description pulled from the invoice line(s). */
+  productName?: string
   unitCost: number
   currency?: string
   /** Where the value came from (per-file diagnostics / review UI). */
@@ -32,6 +34,7 @@ export interface InvoiceResult {
 
 const SKU_HEADERS = ['sku', 'skuid', 'productid', 'itemid', 'contributionsku', 'item', 'code', 'partno', 'partnumber', 'model']
 const COST_HEADERS = ['unitcost', 'cost', 'netprice', 'unitprice', 'price', 'costprice', 'buyprice', 'wholesale', 'net', 'rate']
+const NAME_HEADERS = ['productname', 'description', 'itemdescription', 'name', 'title', 'product', 'itemname']
 
 const CURRENCY_SYMBOLS: Array<{ re: RegExp; code: string }> = [
   { re: /£/, code: 'GBP' },
@@ -40,6 +43,25 @@ const CURRENCY_SYMBOLS: Array<{ re: RegExp; code: string }> = [
 ]
 
 const normalize = (s: unknown): string => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/** Coerce a cell to a clean scalar string (never "[object Object]"/array dumps). */
+function cellStr(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
+  if (Array.isArray(value)) {
+    const first = value.find((v) => v != null && v !== '')
+    return first == null ? '' : cellStr(first)
+  }
+  if (typeof value === 'object') {
+    const cell = value as { w?: unknown; v?: unknown }
+    if (cell.w != null) return cellStr(cell.w)
+    if (cell.v != null) return cellStr(cell.v)
+    const first = Object.values(value as Record<string, unknown>).find((v) => v != null && v !== '')
+    return first == null ? '' : cellStr(first)
+  }
+  return String(value).trim()
+}
 
 function toNumber(value: unknown): number {
   if (value == null || value === '') return NaN
@@ -90,10 +112,11 @@ function findHeaderRow(aoa: unknown[][]): number {
   return bestScore > 0 ? bestRow : 0
 }
 
-function extractFromSheet(buffer: ArrayBuffer, source: string): InvoiceResult {
+function extractFromSheet(buffer: ArrayBuffer, source: string, validSkus?: Set<string>): InvoiceResult {
   const wb = XLSX.read(buffer, { type: 'array' })
   const warnings: string[] = []
   const costs: ExtractedCost[] = []
+  const gate = validSkus && validSkus.size > 0 ? validSkus : null
 
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name]
@@ -105,14 +128,18 @@ function extractFromSheet(buffer: ArrayBuffer, source: string): InvoiceResult {
     const headers = (aoa[headerRow] ?? []).map((h) => normalize(h))
     const skuCol = headers.findIndex((h) => SKU_HEADERS.includes(h))
     const costCol = headers.findIndex((h) => COST_HEADERS.includes(h))
+    const nameCol = headers.findIndex((h) => NAME_HEADERS.includes(h))
     if (skuCol === -1 || costCol === -1) continue
 
     for (const row of aoa.slice(headerRow + 1)) {
       const r = row as unknown[]
-      const sku = String(r[skuCol] ?? '').trim()
+      const sku = cellStr(r[skuCol])
       const cost = toNumber(r[costCol])
       if (!sku || !Number.isFinite(cost) || cost <= 0) continue
-      costs.push({ sku, unitCost: cost, currency: detectCurrency(String(r[costCol])), source, method: 'inline' })
+      // When the Temu whitelist is active, only accept SKUs that exist in it.
+      if (gate && !gate.has(sku.toUpperCase())) continue
+      const productName = nameCol !== -1 ? cellStr(r[nameCol]) : undefined
+      costs.push({ sku, productName, unitCost: cost, currency: detectCurrency(String(r[costCol])), source, method: 'inline' })
     }
     if (costs.length) break // first sheet with usable columns wins
   }
@@ -186,9 +213,14 @@ function looksLikeTableHeader(line: string): boolean {
   return hits >= 2 && hits / tokens.length >= 0.5 && !/\d+[.,]\d{2}/.test(line)
 }
 
+// Recurring per-page footers/continuation markers that split items across page
+// breaks. Stripping them keeps a product name from being separated from its row.
+const FOOTER_RE = /^(continued( on next page)?\.{0,3}|carried (forward|over)|brought forward|thank you[\s\S]*|page\s+\d+\s+of\s+\d+.*|www\.[^\s]+|registered (office|in)\b.*|company (no|reg)\b.*)$/i
+
 /**
- * Strip page numbers and repeated table headers so the regex views the whole
- * document as a single continuous stream.
+ * Strip page numbers, repeated table headers, and recurring page footers so the
+ * regex views the whole multi-page document as one continuous stream (and items
+ * straddling a page break aren't dropped).
  */
 export function cleanInvoiceLines(lines: string[]): string[] {
   return lines.filter((raw) => {
@@ -196,6 +228,7 @@ export function cleanInvoiceLines(lines: string[]): string[] {
     if (!line) return false
     if (PAGE_NUMBER_RE.test(line)) return false
     if (PAGE_WORD_RE.test(line)) return false
+    if (FOOTER_RE.test(line)) return false
     if (looksLikeTableHeader(line)) return false
     return true
   })
@@ -205,16 +238,77 @@ export function cleanInvoiceLines(lines: string[]): string[] {
 
 // A money amount, optionally currency-prefixed. Group 1 = numeric part.
 const MONEY_G = /(?:[£€$]\s?)?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})|\d{1,6}(?:\.\d{1,2}))/g
-// Inline SKU-ish token (same-line case).
-const SKU_TOKEN = /\b([A-Z0-9][A-Z0-9\-_/]{2,23})\b/
-// Explicitly labelled SKU, e.g. "SKU: MR1070-BLK".
-const LABELLED_SKU = /\bSKU\s*[:#]?\s*([A-Z0-9][A-Z0-9\-_/]{1,23})\b/i
-// A loose product code like "MR1070-" or "AB-1207" — letters then digits with a
-// dash, the shape vendors use for catalogue codes.
-const LOOSE_CODE = /\b([A-Z]{1,5}\d{2,6}[A-Z0-9\-]{0,8})\b/
-// Lines that are invoice metadata, not product rows — the loose matcher (which
-// is the least precise) must not fire on these (e.g. "Invoice INV-Z004338").
+
+// ---- STRICT SKU isolation -------------------------------------------------
+// Suppliers' contribution-sku format ONLY: 2–4 uppercase letters, a dash, then
+// 2–6 digits, with an optional short variant suffix (e.g. BM-134, DK-068,
+// MR-1113, DK-526-BLK). Nothing else qualifies.
+const SUPPLIER_SKU = /[A-Z]{2,4}-\d{2,6}(?:-[A-Z0-9]{1,6})?/
+const SUPPLIER_SKU_EXACT = new RegExp(`^${SUPPLIER_SKU.source}$`)
+const SKU_IN_LINE = new RegExp(`\\b(${SUPPLIER_SKU.source})\\b`, 'g')
+// Explicitly labelled SKU, e.g. "SKU: MR-1113" / "SKU MR-1113".
+const LABELLED_SKU = /\bSKU\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{1,23})\b/i
+// Prefixes that share the LETTERS-DIGITS shape but are NEVER product SKUs —
+// invoice/reference/billing codes (INV-2024), tax/account refs, month names.
+const BLOCKED_PREFIX = new Set([
+  'INV', 'PO', 'REF', 'VAT', 'GB', 'EAN', 'ORD', 'ACC', 'BILL', 'TEL', 'FAX', 'NO', 'ID',
+  'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
+])
+// Lines that are invoice metadata, not product rows — the unlabelled matcher
+// must never scan these (e.g. "Invoice INV-Z004338", "Order No ...", dates).
 const METADATA_LINE = /\b(invoice|inv|subtotal|sub-total|total|balance|vat|tax|gst|hsn|date|due|order\s*no|po\s*number|account|iban|sort\s*code|tel|phone|email)\b/i
+
+/**
+ * A code is a valid product SKU only if it matches the supplier LETTERS-DIGITS
+ * format AND its alpha prefix isn't a known invoice/reference/date marker. This
+ * blocks dates (DD/MM/YYYY — no match), invoice numbers (INV-…, Z…), and refs.
+ */
+function isValidSku(raw: string): boolean {
+  const t = raw.trim().toUpperCase()
+  if (!SUPPLIER_SKU_EXACT.test(t)) return false
+  return !BLOCKED_PREFIX.has(t.split('-')[0])
+}
+
+/** First valid supplier SKU appearing in a line, or null. */
+function skuInLine(line: string): string | null {
+  SKU_IN_LINE.lastIndex = 0
+  for (const m of line.matchAll(SKU_IN_LINE)) {
+    if (isValidSku(m[1])) return m[1]
+  }
+  return null
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Build a line-level SKU detector.
+ *  • When `validSkus` (the Temu sheet's `contribution sku` set) is provided, a
+ *    string is a SKU ONLY if it is one of those exact codes — the spreadsheet
+ *    is the authoritative whitelist, so dates/refs/memos can never match.
+ *  • Otherwise fall back to the strict supplier-format matcher (labelled
+ *    `SKU:` first, then a bare LETTERS-DIGITS code on a non-metadata row).
+ */
+function makeSkuDetector(validSkus?: Set<string>): (line: string) => string | null {
+  if (validSkus && validSkus.size > 0) {
+    const alt = [...validSkus]
+      .sort((a, b) => b.length - a.length) // prefer the longest match
+      .map(escapeRegExp)
+      .join('|')
+    const re = new RegExp(`\\b(${alt})\\b`, 'i')
+    return (line) => {
+      const m = line.match(re)
+      return m ? normSku(m[1]) : null
+    }
+  }
+  return (line) => {
+    const labelled = line.match(LABELLED_SKU)
+    if (labelled && isValidSku(labelled[1])) return labelled[1]
+    if (!METADATA_LINE.test(line)) return skuInLine(line)
+    return null
+  }
+}
 
 function parseMoney(token: string): number {
   return parseFloat(token.replace(/,/g, ''))
@@ -266,85 +360,201 @@ function qtyOnLine(line: string): number | null {
   return m ? parseInt(m[1], 10) : null
 }
 
-/**
- * Windowed matcher over the cleaned, continuous line stream. Handles three
- * shapes, in priority order per anchor:
- *   1. labelled  — "SKU: CODE" anywhere; price taken from same or nearby lines.
- *   2. inline    — CODE and price on the same line.
- *   3. loose     — a loose catalogue code (MR1070-) with price within a window.
- */
-export function extractCostsFromLines(lines: string[], source = 'pdf'): ExtractedCost[] {
-  const cleaned = lines.map((l) => l.trim()).filter(Boolean)
-  const out: ExtractedCost[] = []
-  const WINDOW = 3 // how many following lines to scan for a price
+// Document-structure / financial lines that are never product names. Narrower
+// than METADATA_LINE on purpose: words like "phone"/"account" legitimately
+// appear in product names ("Magnetic Phone Mount"), so they must NOT be here.
+const NAME_REJECT = /\b(invoice|subtotal|sub-total|grand\s*total|total|balance|amount\s*due|vat|gst|hsn|iban|sort\s*code)\b/i
 
-  const priceFromWindow = (startIdx: number): { cost: number | null; line: string } => {
-    for (let k = 0; k <= WINDOW && startIdx + k < cleaned.length; k++) {
-      const ln = cleaned[startIdx + k]
-      const amounts = moneyOnLine(ln)
+/** Does this line read like a product description (words, not money/metadata)? */
+function looksLikeName(line: string): boolean {
+  if (NAME_REJECT.test(line)) return false
+  const letters = (line.match(/[A-Za-z]/g) ?? []).length
+  const words = line.split(/\s+/).filter((w) => /[A-Za-z]{2,}/.test(w))
+  return letters >= 5 && words.length >= 2
+}
+
+/** Strip SKU labels, a leading line index, money amounts and EAN codes from a name. */
+function cleanName(line: string, sku?: string): string {
+  let s = line
+    .replace(/\bSKU\s*[:#]?\s*[A-Z0-9\-_/]+/gi, ' ') // "SKU: MR1070"
+    .replace(/\bEAN\s*:?\s*\d+/gi, ' ') // EAN barcodes
+    .replace(/(?:[£€$]\s?)?\d[\d,]*\.\d{1,2}/g, ' ') // money
+    .replace(/^\s*\d{1,3}[).]?\s+/, ' ') // leading "1 " / "1) " item index
+  if (sku) s = s.replace(new RegExp(sku.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
+  return s.replace(/\s+/g, ' ').trim().slice(0, 80)
+}
+
+/**
+ * Find the product name for a matched SKU at line `i`. The description usually
+ * sits ON the SKU line (inline) or one/two lines ABOVE it (labelled/loose),
+ * so we probe a small window and keep the first line that reads like a name.
+ */
+function findName(lines: string[], i: number, sku: string): string {
+  const probe = [lines[i], lines[i - 1], lines[i - 2], lines[i + 1]]
+  for (const cand of probe) {
+    if (cand && looksLikeName(cand)) {
+      const n = cleanName(cand, sku)
+      if (n.length >= 3) return n
+    }
+  }
+  return cleanName(lines[i] ?? '', sku)
+}
+
+/**
+ * Find the unit cost nearest to a SKU occurrence on line `idx`. Looks on the SKU
+ * line first, then fans outward — DOWN before UP at each distance — because an
+ * invoice row's price usually sits to the right (same line) or just below it.
+ */
+function priceNear(lines: string[], idx: number): { cost: number | null; line: string } {
+  const WINDOW = 4
+  const here = moneyOnLine(lines[idx])
+  if (here.length) {
+    const unit = pickUnitCost(here, qtyOnLine(lines[idx]))
+    if (unit != null) return { cost: unit, line: lines[idx] }
+  }
+  for (let k = 1; k <= WINDOW; k++) {
+    for (const j of [idx + k, idx - k]) {
+      if (j < 0 || j >= lines.length) continue
+      const amounts = moneyOnLine(lines[j])
       if (amounts.length) {
-        const qty = qtyOnLine(ln)
-        const unit = pickUnitCost(amounts, qty)
-        if (unit != null) return { cost: unit, line: ln }
+        const unit = pickUnitCost(amounts, qtyOnLine(lines[j]))
+        if (unit != null) return { cost: unit, line: lines[j] }
       }
     }
-    return { cost: null, line: cleaned[startIdx] ?? '' }
   }
+  return { cost: null, line: lines[idx] ?? '' }
+}
+
+/**
+ * WHITELIST-DRIVEN extraction. The Temu sheet's `contribution sku` set is the
+ * single source of truth: we scan the ENTIRE document text for the EXACT codes
+ * in that list (all occurrences, all pages) and, for each one found, grab its
+ * adjacent unit price. Anything outside the whitelist — dates, invoice numbers,
+ * tracking refs, statement text — can never be captured.
+ *
+ * STRICT: a match produces a row ONLY when a real (> 0) price is found beside it.
+ * Codes without a recoverable price are dropped, never emitted as blank rows or
+ * placeholder objects.
+ */
+function extractByWhitelist(lines: string[], validSkus: Set<string>, source: string): ExtractedCost[] {
+  const skuList = [...validSkus].filter(Boolean).sort((a, b) => b.length - a.length) // longest first
+  if (!skuList.length) return []
+  // Match a whitelisted code only when it's not glued to other alphanumerics
+  // (so "MR-1113" won't match inside "MR-11139"), but a trailing "-VARIANT" is ok.
+  const re = new RegExp(`(?<![A-Z0-9])(${skuList.map(escapeRegExp).join('|')})(?![A-Z0-9])`, 'gi')
+
+  // Pre-mark which lines themselves contain a whitelisted SKU. These act as hard
+  // boundaries: when fanning out to find a price we must NOT cross into another
+  // product's line, or a price-less SKU would steal its neighbour's price.
+  const lineHasSku = lines.map((ln) => {
+    re.lastIndex = 0
+    return re.test(ln)
+  })
+
+  /** Nearest price to line `idx`, never crossing a line that holds another SKU. */
+  const priceForRow = (idx: number): { cost: number | null; line: string } => {
+    const here = moneyOnLine(lines[idx])
+    if (here.length) {
+      const unit = pickUnitCost(here, qtyOnLine(lines[idx]))
+      if (unit != null) return { cost: unit, line: lines[idx] }
+    }
+    const WINDOW = 4
+    let down = true
+    let up = true
+    for (let k = 1; k <= WINDOW; k++) {
+      const dj = idx + k
+      if (down && dj < lines.length) {
+        if (lineHasSku[dj]) down = false // boundary: belongs to the next product
+        else {
+          const a = moneyOnLine(lines[dj])
+          const u = a.length ? pickUnitCost(a, qtyOnLine(lines[dj])) : null
+          if (u != null) return { cost: u, line: lines[dj] }
+        }
+      }
+      const uj = idx - k
+      if (up && uj >= 0) {
+        if (lineHasSku[uj]) up = false // boundary: belongs to the previous product
+        else {
+          const a = moneyOnLine(lines[uj])
+          const u = a.length ? pickUnitCost(a, qtyOnLine(lines[uj])) : null
+          if (u != null) return { cost: u, line: lines[uj] }
+        }
+      }
+      if (!down && !up) break
+    }
+    return { cost: null, line: lines[idx] ?? '' }
+  }
+
+  const out: ExtractedCost[] = []
+  for (let i = 0; i < lines.length; i++) {
+    re.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(lines[i])) !== null) {
+      const sku = normSku(m[1])
+      const { cost, line: priceLine } = priceForRow(i)
+      if (cost == null || !(cost > 0)) continue // no price → not a real product row
+      out.push({
+        sku,
+        productName: findName(lines, i, sku),
+        unitCost: cost,
+        currency: detectCurrency(priceLine),
+        source,
+        method: 'inline',
+      })
+    }
+  }
+  return dedupe(out)
+}
+
+/**
+ * Matcher over the cleaned, continuous line stream.
+ *  • When the Temu `contribution sku` whitelist is supplied, every whitelisted
+ *    code found anywhere in the document is emitted with its nearest price
+ *    (the authoritative path — see {@link extractByWhitelist}).
+ *  • Otherwise fall back to the strict supplier-format regex, which still bars
+ *    invoice IDs, dates and free text from being read as SKUs.
+ */
+export function extractCostsFromLines(
+  lines: string[],
+  source = 'pdf',
+  validSkus?: Set<string>,
+): ExtractedCost[] {
+  const cleaned = lines.map((l) => l.trim()).filter(Boolean)
+
+  if (validSkus && validSkus.size > 0) {
+    return extractByWhitelist(cleaned, validSkus, source)
+  }
+
+  const out: ExtractedCost[] = []
+  const detectSku = makeSkuDetector(validSkus)
 
   for (let i = 0; i < cleaned.length; i++) {
     const line = cleaned[i]
-
-    // 1) Labelled SKU has highest confidence.
-    const labelled = line.match(LABELLED_SKU)
-    if (labelled) {
-      const sku = labelled[1]
-      // price may be on this line (after the label) or following lines.
-      const { cost, line: priceLine } = priceFromWindow(i)
-      if (cost != null) {
-        out.push({ sku, unitCost: cost, currency: detectCurrency(priceLine), source, method: 'labelled' })
-        continue
-      }
-    }
-
-    // 2) Inline: a SKU-ish token AND money on the same line.
-    const inlineAmounts = moneyOnLine(line)
-    if (inlineAmounts.length) {
-      const tok = line.match(SKU_TOKEN)
-      if (tok) {
-        const sku = tok[1]
-        if (/\d/.test(sku) || sku.includes('-')) {
-          // Avoid treating the money itself as the SKU.
-          if (!/^\d+([.,]\d+)?$/.test(sku)) {
-            const qty = qtyOnLine(line)
-            const unit = pickUnitCost(inlineAmounts, qty)
-            if (unit != null) {
-              out.push({ sku, unitCost: unit, currency: detectCurrency(line), source, method: 'inline' })
-              continue
-            }
-          }
-        }
-      }
-    }
-
-    // 3) Loose catalogue code with a price in the window. Skip metadata lines
-    //    (invoice numbers, totals, VAT) so we don't mistake them for SKUs.
-    const loose = !METADATA_LINE.test(line) ? line.match(LOOSE_CODE) : null
-    if (loose) {
-      const sku = loose[1]
-      const { cost, line: priceLine } = priceFromWindow(i)
-      if (cost != null) {
-        out.push({ sku, unitCost: cost, currency: detectCurrency(priceLine), source, method: 'loose' })
-      }
-    }
+    const sku = detectSku(line)
+    if (!sku) continue
+    const { cost, line: priceLine } = priceNear(cleaned, i)
+    if (cost == null) continue
+    out.push({
+      sku,
+      productName: findName(cleaned, i, sku),
+      unitCost: cost,
+      currency: detectCurrency(priceLine),
+      source,
+      method: 'inline',
+    })
   }
 
   return dedupe(out)
 }
 
-async function extractFromPdf(buffer: ArrayBuffer, source: string): Promise<InvoiceResult> {
+async function extractFromPdf(
+  buffer: ArrayBuffer,
+  source: string,
+  validSkus?: Set<string>,
+): Promise<InvoiceResult> {
   const { lines, pages } = await pdfToLines(buffer)
   const cleaned = cleanInvoiceLines(lines)
-  const costs = extractCostsFromLines(cleaned, source)
+  const costs = extractCostsFromLines(cleaned, source, validSkus)
   const warnings: string[] = []
   if (!costs.length) {
     warnings.push(
@@ -361,23 +571,38 @@ async function extractFromPdf(buffer: ArrayBuffer, source: string): Promise<Invo
 
 /* ----------------------------- shared ------------------------------ */
 
-/** Keep the last-seen cost per normalized SKU (later lines override earlier). */
+/** Collapse repeated SKU occurrences into one entry. Later lines override
+ *  earlier ones, but a price-less duplicate must NOT wipe out a price we already
+ *  captured, and a missing name/currency falls back to the earlier match. */
 function dedupe(costs: ExtractedCost[]): ExtractedCost[] {
   const map = new Map<string, ExtractedCost>()
-  for (const c of costs) map.set(skuKey(c.sku), c)
+  for (const c of costs) {
+    const key = skuKey(c.sku)
+    const prev = map.get(key)
+    if (!prev) {
+      map.set(key, c)
+      continue
+    }
+    map.set(key, {
+      ...c,
+      unitCost: c.unitCost > 0 ? c.unitCost : prev.unitCost,
+      productName: c.productName || prev.productName,
+      currency: c.currency || prev.currency,
+    })
+  }
   return [...map.values()]
 }
 
 /** Entry point for a single file: route by extension. */
-export async function extractInvoice(file: File): Promise<InvoiceResult> {
+export async function extractInvoice(file: File, validSkus?: Set<string>): Promise<InvoiceResult> {
   const name = file.name.toLowerCase()
   const buffer = await file.arrayBuffer()
 
   if (name.endsWith('.pdf')) {
-    return extractFromPdf(buffer, file.name)
+    return extractFromPdf(buffer, file.name, validSkus)
   }
   if (name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.xls')) {
-    return extractFromSheet(buffer, file.name)
+    return extractFromSheet(buffer, file.name, validSkus)
   }
   throw new Error('Unsupported invoice type. Use .pdf, .csv, .xlsx or .xls.')
 }
@@ -399,6 +624,7 @@ export interface BulkInvoiceResult {
 export async function extractInvoiceFiles(
   files: File[],
   onProgress?: (done: number, total: number, fileName: string) => void,
+  validSkus?: Set<string>,
 ): Promise<BulkInvoiceResult> {
   const all: ExtractedCost[] = []
   const perFile: BulkInvoiceResult['perFile'] = []
@@ -408,7 +634,7 @@ export async function extractInvoiceFiles(
     const file = files[idx]
     onProgress?.(idx, files.length, file.name)
     try {
-      const res = await extractInvoice(file)
+      const res = await extractInvoice(file, validSkus)
       all.push(...res.costs)
       perFile.push({ fileName: file.name, count: res.costs.length, pages: res.pages, warnings: res.warnings })
       okFiles++

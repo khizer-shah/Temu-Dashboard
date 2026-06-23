@@ -3,7 +3,7 @@
 import type { CostEntry } from './db'
 import type { OrderItem } from './types'
 
-/** Normalize a SKU for cross-referencing (invoices vs. order sheets vary). */
+/** Normalize a SKU for use as a stable storage key (lowercased). */
 export function skuKey(sku: string): string {
   return String(sku ?? '')
     .trim()
@@ -11,12 +11,42 @@ export function skuKey(sku: string): string {
     .replace(/\s+/g, ' ')
 }
 
-export type CostMap = Map<string, CostEntry>
+/**
+ * Normalize a SKU for cross-referencing comparisons. We `trim().toUpperCase()`
+ * BOTH sides before matching so case/whitespace never causes a miss
+ * (e.g. " mr-1113 " vs "MR-1113").
+ */
+export function normSku(sku: string): string {
+  return String(sku ?? '').trim().toUpperCase()
+}
 
-export function buildCostMap(entries: CostEntry[]): CostMap {
-  const map: CostMap = new Map()
-  for (const e of entries) map.set(e.skuKey, e)
-  return map
+/** A blank/placeholder SKU — these can never match a registry entry. */
+function isBlankSku(sku: string): boolean {
+  const s = normSku(sku)
+  return s === '' || s === '—' || s === '-' || s === 'N/A'
+}
+
+export interface CostIndex {
+  /** Uppercase-normalized SKU -> entry, for exact cross-referencing. */
+  byKey: Map<string, CostEntry>
+}
+
+export function buildCostMap(entries: CostEntry[]): CostIndex {
+  const byKey = new Map<string, CostEntry>()
+  for (const e of entries) byKey.set(normSku(e.sku), e)
+  return { byKey }
+}
+
+/**
+ * Cross-reference one order item to a cost entry — STRICTLY by SKU.
+ *
+ * Matching is exact on the normalized `contribution sku` only. Product names are
+ * deliberately NEVER consulted: a blank SKU, or one absent from the registry, is
+ * an unmatched item. (No name-substring fallback — see the SKU-strict mandate.)
+ */
+export function matchCost(item: OrderItem, index: CostIndex): CostEntry | null {
+  if (isBlankSku(item.sku)) return null
+  return index.byKey.get(normSku(item.sku)) ?? null
 }
 
 /** An order item enriched with reconciled cost + profit (when a cost is known). */
@@ -33,10 +63,10 @@ export interface CostedItem extends OrderItem {
  * found, compute Item Net Profit = revenue - (unitsSold * extractedCost).
  * Items without a matching cost keep null profit (shown as "—", not zero).
  */
-export function applyCosts(items: OrderItem[], costs: CostMap): CostedItem[] {
+export function applyCosts(items: OrderItem[], costs: CostIndex): CostedItem[] {
   return items.map((item) => {
-    // Match on the seller SKU first, then fall back to the raw skuId.
-    const entry = costs.get(skuKey(item.sku)) ?? null
+    // Exact `contribution sku` match, else product-name substring fallback.
+    const entry = matchCost(item, costs)
     if (!entry) {
       return { ...item, unitCost: null, netProfit: null, margin: null, hasCost: false }
     }

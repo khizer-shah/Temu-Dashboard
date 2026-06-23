@@ -116,6 +116,8 @@ export interface ParseResult {
   /** Original file name. */
   fileName: string
   rowCount: number
+  /** Number of "Canceled" rows dropped before persistence/analytics. */
+  skippedCanceled: number
   /** ISO currency code detected from the data ("GBP", "USD", "EUR"). */
   currency: string
   /** Non-fatal notes surfaced to the user. */

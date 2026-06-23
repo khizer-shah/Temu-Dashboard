@@ -36,6 +36,22 @@ export interface CostEntry {
   updatedAt: number
 }
 
+/**
+ * A product registered from a supplier invoice: cost + name + a target retail
+ * price (cost × markup). Global catalog, keyed by normalized SKU.
+ */
+export interface ProductRecord {
+  skuKey: string
+  sku: string
+  productName: string
+  costPrice: number
+  /** costPrice × markup (default 1.20), editable before commit. */
+  targetListingPrice: number
+  currency?: string
+  source: string
+  updatedAt: number
+}
+
 interface StoreDB extends DBSchema {
   accounts: {
     key: string
@@ -50,10 +66,14 @@ interface StoreDB extends DBSchema {
     key: string
     value: CostEntry
   }
+  products: {
+    key: string
+    value: ProductRecord
+  }
 }
 
 const DB_NAME = 'temu-store-registry'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 let dbPromise: Promise<IDBPDatabase<StoreDB>> | null = null
 
@@ -70,6 +90,10 @@ function getDB(): Promise<IDBPDatabase<StoreDB>> {
         }
         if (!db.objectStoreNames.contains('costRegistry')) {
           db.createObjectStore('costRegistry', { keyPath: 'skuKey' })
+        }
+        // v2: product catalog registered from supplier invoices.
+        if (!db.objectStoreNames.contains('products')) {
+          db.createObjectStore('products', { keyPath: 'skuKey' })
         }
       },
     })
@@ -158,4 +182,27 @@ export async function saveCostEntries(entries: CostEntry[]): Promise<void> {
 export async function clearCostRegistry(): Promise<void> {
   const db = await getDB()
   await db.clear('costRegistry')
+}
+
+/* ----------------------------- Products ----------------------------- */
+
+export async function getProducts(): Promise<ProductRecord[]> {
+  const db = await getDB()
+  return db.getAll('products')
+}
+
+/** Upsert product records (later invoices overwrite earlier data for a SKU). */
+export async function saveProducts(records: ProductRecord[]): Promise<void> {
+  const db = await getDB()
+  const tx = db.transaction('products', 'readwrite')
+  const store = tx.objectStore('products')
+  for (const rec of records) {
+    await store.put(rec)
+  }
+  await tx.done
+}
+
+export async function clearProducts(): Promise<void> {
+  const db = await getDB()
+  await db.clear('products')
 }

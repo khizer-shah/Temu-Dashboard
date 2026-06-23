@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ReceiptText, Loader2, AlertTriangle, Layers } from 'lucide-react'
+import { PackagePlus, Loader2, AlertTriangle, Layers } from 'lucide-react'
 import { FileDropzone } from './FileDropzone'
 import { InvoiceReviewModal } from './InvoiceReviewModal'
 import { useStore, type InvoicePreview } from '../store/StoreContext'
@@ -38,11 +38,11 @@ export function InvoiceDropzone() {
                   : 'border-white/10 bg-surface-700 text-slate-400 group-hover:text-accent',
               ].join(' ')}
             >
-              {isBusy ? <Loader2 className="h-5 w-5 animate-spin" /> : <ReceiptText className="h-5 w-5" />}
+              {isBusy ? <Loader2 className="h-5 w-5 animate-spin" /> : <PackagePlus className="h-5 w-5" />}
             </span>
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-2 text-sm font-medium text-white">
-                Ingest Cost Invoices (.pdf, .csv, .xlsx)
+                Load Products from Supplier Invoices (.pdf, .csv, .xlsx)
                 <span className="inline-flex items-center gap-1 rounded-full border border-accent/20 bg-accent/5 px-1.5 py-0.5 text-[10px] font-medium text-accent">
                   <Layers className="h-2.5 w-2.5" /> bulk
                 </span>
@@ -58,8 +58,8 @@ export function InvoiceDropzone() {
                 </p>
               ) : (
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Drop one or many invoices (multi-page safe). You'll review extracted SKU costs before they
-                  reconcile.
+                  Drop one or many invoices (multi-page safe). Review SKU, cost &amp; the +20% target retail
+                  price, then Save &amp; Apply to your catalog.
                 </p>
               )}
             </div>
