@@ -5,6 +5,14 @@ dist-ssr
 .DS_Store
 .vite
 
+# Env & secrets (never commit real connection strings)
+.env
+.env*
+!.env.example
+
+# Vercel
+.vercel
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

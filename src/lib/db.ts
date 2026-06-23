@@ -1,14 +1,12 @@
-// IndexedDB persistence layer for the multi-tenant store registry.
+// Cloud persistence layer for the multi-tenant store registry.
 //
-// Schema (object stores):
-//   accounts     — store profiles, keyed by id            { id, sellerName, createdAt, updatedAt }
-//   orderItems   — order line items, keyed by id,         indexed by accountId
-//   costRegistry — global SKU -> cost ledger, keyed by skuKey
+// Previously this module talked to browser IndexedDB; it now talks to the
+// Vercel Serverless API (/api/*) backed by Neon Postgres, so data is a single
+// shared dataset across all users instead of per-browser.
 //
-// The `idb` wrapper gives us a typed, promise-based API over native IndexedDB so
-// we get IndexedDB's capacity (well beyond localStorage's ~5MB) without the
-// verbose request/transaction boilerplate.
-import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+// The exported types and function signatures are intentionally UNCHANGED from
+// the IndexedDB version, so `src/store/StoreContext.tsx` (the only caller) does
+// not need to change. Prisma lives exclusively in /api — never import it here.
 import type { OrderItem } from './types'
 
 export interface AccountRecord {
@@ -52,87 +50,48 @@ export interface ProductRecord {
   updatedAt: number
 }
 
-interface StoreDB extends DBSchema {
-  accounts: {
-    key: string
-    value: AccountRecord
-  }
-  orderItems: {
-    key: string
-    value: StoredOrderItem
-    indexes: { byAccount: string }
-  }
-  costRegistry: {
-    key: string
-    value: CostEntry
-  }
-  products: {
-    key: string
-    value: ProductRecord
-  }
-}
+/* ------------------------------ transport --------------------------- */
 
-const DB_NAME = 'temu-store-registry'
-const DB_VERSION = 2
+/** Base URL for the API. Same-origin by default; override with VITE_API_BASE. */
+const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
-let dbPromise: Promise<IDBPDatabase<StoreDB>> | null = null
-
-function getDB(): Promise<IDBPDatabase<StoreDB>> {
-  if (!dbPromise) {
-    dbPromise = openDB<StoreDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains('accounts')) {
-          db.createObjectStore('accounts', { keyPath: 'id' })
-        }
-        if (!db.objectStoreNames.contains('orderItems')) {
-          const store = db.createObjectStore('orderItems', { keyPath: 'id' })
-          store.createIndex('byAccount', 'accountId')
-        }
-        if (!db.objectStoreNames.contains('costRegistry')) {
-          db.createObjectStore('costRegistry', { keyPath: 'skuKey' })
-        }
-        // v2: product catalog registered from supplier invoices.
-        if (!db.objectStoreNames.contains('products')) {
-          db.createObjectStore('products', { keyPath: 'skuKey' })
-        }
-      },
-    })
+/** Thin JSON fetch helper: throws on non-2xx, returns parsed body (or undefined for 204). */
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}/api${path}`, {
+    headers: { 'content-type': 'application/json' },
+    ...init,
+  })
+  if (!res.ok) {
+    let detail = ''
+    try {
+      detail = (await res.json())?.error ?? ''
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`API ${init?.method ?? 'GET'} ${path} failed: ${res.status}${detail ? ` — ${detail}` : ''}`)
   }
-  return dbPromise
+  if (res.status === 204) return undefined as T
+  return (await res.json()) as T
 }
 
 /* ----------------------------- Accounts ----------------------------- */
 
 export async function getAccounts(): Promise<AccountRecord[]> {
-  const db = await getDB()
-  const all = await db.getAll('accounts')
-  return all.sort((a, b) => a.createdAt - b.createdAt)
+  return api<AccountRecord[]>('/accounts')
 }
 
 export async function putAccount(account: AccountRecord): Promise<void> {
-  const db = await getDB()
-  await db.put('accounts', account)
+  await api('/accounts', { method: 'POST', body: JSON.stringify(account) })
 }
 
 export async function deleteAccount(accountId: string): Promise<void> {
-  const db = await getDB()
-  const tx = db.transaction(['accounts', 'orderItems'], 'readwrite')
-  await tx.objectStore('accounts').delete(accountId)
-  // Cascade: remove this account's order items.
-  const idx = tx.objectStore('orderItems').index('byAccount')
-  let cursor = await idx.openCursor(accountId)
-  while (cursor) {
-    await cursor.delete()
-    cursor = await cursor.continue()
-  }
-  await tx.done
+  await api(`/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' })
 }
 
 /* --------------------------- Order items ---------------------------- */
 
 export async function getItemsForAccount(accountId: string): Promise<StoredOrderItem[]> {
-  const db = await getDB()
-  return db.getAllFromIndex('orderItems', 'byAccount', accountId)
+  return api<StoredOrderItem[]>(`/orders?accountId=${encodeURIComponent(accountId)}`)
 }
 
 /**
@@ -140,69 +99,39 @@ export async function getItemsForAccount(accountId: string): Promise<StoredOrder
  * are overwritten (idempotent re-uploads); other accounts are untouched.
  */
 export async function saveItems(accountId: string, items: OrderItem[]): Promise<void> {
-  const db = await getDB()
-  const tx = db.transaction('orderItems', 'readwrite')
-  const store = tx.objectStore('orderItems')
-  for (const item of items) {
-    await store.put({ ...item, accountId })
-  }
-  await tx.done
+  await api('/orders', { method: 'POST', body: JSON.stringify({ accountId, items }) })
 }
 
 export async function clearItemsForAccount(accountId: string): Promise<void> {
-  const db = await getDB()
-  const tx = db.transaction('orderItems', 'readwrite')
-  const idx = tx.objectStore('orderItems').index('byAccount')
-  let cursor = await idx.openCursor(accountId)
-  while (cursor) {
-    await cursor.delete()
-    cursor = await cursor.continue()
-  }
-  await tx.done
+  await api(`/orders?accountId=${encodeURIComponent(accountId)}`, { method: 'DELETE' })
 }
 
 /* --------------------------- Cost registry -------------------------- */
 
 export async function getCostRegistry(): Promise<CostEntry[]> {
-  const db = await getDB()
-  return db.getAll('costRegistry')
+  return api<CostEntry[]>('/costs')
 }
 
 /** Upsert cost entries (later invoices overwrite earlier costs for a SKU). */
 export async function saveCostEntries(entries: CostEntry[]): Promise<void> {
-  const db = await getDB()
-  const tx = db.transaction('costRegistry', 'readwrite')
-  const store = tx.objectStore('costRegistry')
-  for (const entry of entries) {
-    await store.put(entry)
-  }
-  await tx.done
+  await api('/costs', { method: 'POST', body: JSON.stringify({ costs: entries }) })
 }
 
 export async function clearCostRegistry(): Promise<void> {
-  const db = await getDB()
-  await db.clear('costRegistry')
+  await api('/costs', { method: 'DELETE' })
 }
 
 /* ----------------------------- Products ----------------------------- */
 
 export async function getProducts(): Promise<ProductRecord[]> {
-  const db = await getDB()
-  return db.getAll('products')
+  return api<ProductRecord[]>('/products')
 }
 
 /** Upsert product records (later invoices overwrite earlier data for a SKU). */
 export async function saveProducts(records: ProductRecord[]): Promise<void> {
-  const db = await getDB()
-  const tx = db.transaction('products', 'readwrite')
-  const store = tx.objectStore('products')
-  for (const rec of records) {
-    await store.put(rec)
-  }
-  await tx.done
+  await api('/products', { method: 'POST', body: JSON.stringify({ products: records }) })
 }
 
 export async function clearProducts(): Promise<void> {
-  const db = await getDB()
-  await db.clear('products')
+  await api('/products', { method: 'DELETE' })
 }

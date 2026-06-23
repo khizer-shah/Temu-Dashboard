@@ -1,0 +1,94 @@
+// Prisma schema for the Temu Store Manager cloud backend (Neon Postgres).
+//
+// Models mirror the TypeScript interfaces the app already uses:
+//   Account   -> src/lib/db.ts  AccountRecord
+//   OrderItem -> src/lib/types.ts OrderItem (+ accountId, like StoredOrderItem)
+//   Product   -> src/lib/db.ts  ProductRecord  (global catalog, keyed by skuKey)
+//   CostEntry -> src/lib/db.ts  CostEntry      (global ledger, keyed by skuKey)
+//
+// Type choices are deliberately faithful to the current client app:
+//   • money fields use Float (the app does plain JS-number math today)
+//   • createdAt/updatedAt are epoch-ms Float (avoids BigInt JSON friction)
+//   • purchaseDate (PurchaseDate|null) and raw (Record) are stored as Json
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // Neon POOLED connection (-pooler host) for serverless
+  directUrl = env("DIRECT_URL")   // Neon DIRECT connection, used by `prisma db push`/migrations
+}
+
+model Account {
+  id         String      @id
+  sellerName String
+  createdAt  Float
+  updatedAt  Float
+  orderItems OrderItem[]
+}
+
+model OrderItem {
+  id          String  @id
+  accountId   String
+  account     Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  orderId          String
+  orderItemId      String
+  status           String
+  fulfillmentMode  String
+
+  productName String
+  variation   String
+  sku         String
+
+  qtyPurchased Int
+  qtyShipped   Int
+  qtyToShip    Int
+  qtyCanceled  Int
+
+  revenue        Float
+  goodsBasePrice Float
+  shippingCost   Float
+  taxTotal       Float
+  discount       Float
+
+  carrier          String
+  trackingNumber   String
+  settlementStatus String
+
+  city    String
+  state   String
+  country String
+
+  purchaseDate    Json? // { key, label, sort } or null
+  purchaseDateRaw String
+
+  awaitingShipment Boolean
+
+  raw Json // original CSV/sheet row, kept verbatim
+
+  @@index([accountId])
+  @@index([accountId, sku])
+}
+
+model Product {
+  skuKey             String  @id
+  sku                String
+  productName        String
+  costPrice          Float
+  targetListingPrice Float
+  currency           String?
+  source             String
+  updatedAt          Float
+}
+
+model CostEntry {
+  skuKey    String  @id
+  sku       String
+  unitCost  Float
+  currency  String?
+  source    String
+  updatedAt Float
+}

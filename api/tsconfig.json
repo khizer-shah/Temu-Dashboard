@@ -1,0 +1,16 @@
+{
+  "// note": "Editor/type-check config for the Vercel serverless functions (Node, not the browser). Vercel compiles /api independently; this is for local DX and `tsc --noEmit -p api`.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "types": ["node", "@vercel/node"],
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "resolveJsonModule": true
+  },
+  "include": ["**/*.ts"]
+}
