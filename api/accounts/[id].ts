@@ -2,8 +2,8 @@
 //   DELETE -> delete an account; its order items cascade via the FK
 //             [replaces db.deleteAccount]
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { prisma } from '../_lib/prisma'
-import { methodNotAllowed } from '../_lib/util'
+import { prisma } from '../../server/prisma.js'
+import { methodNotAllowed } from '../../server/util.js'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'DELETE') return methodNotAllowed(res, ['DELETE'])

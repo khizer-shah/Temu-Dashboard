@@ -14,7 +14,7 @@ export default async function handler(_req: VercelRequest, res: VercelResponse) 
   try {
     // Dynamic import so a throwing PrismaClient constructor (e.g. missing engine
     // or missing DATABASE_URL) is caught here instead of crashing the function.
-    const { prisma } = await import('./_lib/prisma')
+    const { prisma } = await import('../server/prisma.js')
     const accounts = await prisma.account.count()
     return res.status(200).json({ ok: true, env, db: 'reachable', accounts })
   } catch (err) {

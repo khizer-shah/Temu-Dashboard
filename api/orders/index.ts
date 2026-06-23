@@ -4,8 +4,8 @@
 //   DELETE ?accountId=...           -> clear an account's items[db.clearItemsForAccount]
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { Prisma } from '@prisma/client'
-import { prisma } from '../_lib/prisma'
-import { chunk, methodNotAllowed, readBody } from '../_lib/util'
+import { prisma } from '../../server/prisma.js'
+import { chunk, methodNotAllowed, readBody } from '../../server/util.js'
 
 /** Shape of an order item as sent by the client (matches src/lib/types.ts OrderItem). */
 interface OrderItemBody {

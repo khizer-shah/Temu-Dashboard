@@ -3,8 +3,8 @@
 //   POST   { costs } -> bulk upsert          [db.saveCostEntries]
 //   DELETE -> clear the ledger               [db.clearCostRegistry]
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { prisma } from '../_lib/prisma'
-import { chunk, methodNotAllowed, readBody } from '../_lib/util'
+import { prisma } from '../../server/prisma.js'
+import { chunk, methodNotAllowed, readBody } from '../../server/util.js'
 
 interface CostBody {
   skuKey: string

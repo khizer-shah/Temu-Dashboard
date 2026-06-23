@@ -2,8 +2,8 @@
 //   GET  -> list all accounts (sorted by createdAt)   [replaces db.getAccounts]
 //   POST -> upsert one account                         [replaces db.putAccount]
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { prisma } from '../_lib/prisma'
-import { methodNotAllowed, readBody } from '../_lib/util'
+import { prisma } from '../../server/prisma.js'
+import { methodNotAllowed, readBody } from '../../server/util.js'
 
 interface AccountBody {
   id: string

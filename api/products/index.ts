@@ -3,8 +3,8 @@
 //   POST   { products } -> bulk upsert      [db.saveProducts]  (the "upload" path)
 //   DELETE -> clear the catalog             [db.clearProducts]
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { prisma } from '../_lib/prisma'
-import { chunk, methodNotAllowed, readBody } from '../_lib/util'
+import { prisma } from '../../server/prisma.js'
+import { chunk, methodNotAllowed, readBody } from '../../server/util.js'
 
 interface ProductBody {
   skuKey: string
