@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Store, ArrowRight, Sparkles } from 'lucide-react'
 import { useStore } from '../store/StoreContext'
+import { ThemeToggle } from './ThemeToggle'
 
 /** First-run screen: no store profiles exist yet. */
 export function Onboarding() {
@@ -17,6 +18,9 @@ export function Onboarding() {
         aria-hidden
         className="pointer-events-none absolute left-1/2 top-1/2 h-[480px] w-[480px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent-glow blur-[120px]"
       />
+      <div className="absolute right-5 top-5">
+        <ThemeToggle />
+      </div>
       <div className="relative w-full max-w-md animate-fade-in text-center">
         <span className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl border border-accent/20 bg-accent/5 text-accent">
           <Store className="h-7 w-7" />

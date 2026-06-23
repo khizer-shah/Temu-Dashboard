@@ -2,9 +2,70 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens as space-separated RGB channels so Tailwind's `<alpha-value>`
+ * opacity modifiers keep working (e.g. text-white/50, border-white/5).
+ *
+ * The trick: we OVERRIDE Tailwind's `white`, `black`, `slate`, and `surface`
+ * to read these variables. Because `text-white` (primary text), `border-white/5`
+ * (hairlines) and `bg-white/[0.02]` (hover overlays) ALL want to flip the same
+ * direction between themes, a single `--c-fg` channel drives every one of them.
+ * That's why the existing class names didn't need to change.
+ *
+ * Default (`:root`) is LIGHT; `.dark` overrides restore the original dark look.
+ */
 @layer base {
   :root {
+    color-scheme: light;
+
+    --c-bg: 248 250 252; /* page background (#f8fafc) */
+    --c-fg: 15 23 42; /* primary text / hairlines / overlays (#0f172a) */
+
+    --c-surface-900: 255 255 255;
+    --c-surface-850: 255 255 255;
+    --c-surface-800: 241 245 249; /* inputs (#f1f5f9) */
+    --c-surface-700: 226 232 240; /* chips/badges (#e2e8f0) */
+    --c-surface-600: 203 213 225;
+    --c-surface-500: 148 163 184;
+
+    /* Secondary text ramp — inverted for legibility on light surfaces. */
+    --c-slate-200: 51 65 85; /* most prominent (#334155) */
+    --c-slate-300: 71 85 105;
+    --c-slate-400: 100 116 139;
+    --c-slate-500: 100 116 139;
+    --c-slate-600: 148 163 184; /* dimmest (#94a3b8) */
+
+    /* Accent: readable darker teal for text/lines on white. */
+    --c-accent: 13 148 136; /* #0d9488 */
+    --c-accent-glow: rgba(0, 245, 212, 0.12);
+
+    /* Chart axis/tick color (used by global recharts CSS). */
+    --c-chart-axis: 71 85 105;
+  }
+
+  .dark {
     color-scheme: dark;
+
+    --c-bg: 0 0 0;
+    --c-fg: 255 255 255;
+
+    --c-surface-900: 0 0 0;
+    --c-surface-850: 7 7 8;
+    --c-surface-800: 12 13 15;
+    --c-surface-700: 20 21 24;
+    --c-surface-600: 28 30 34;
+    --c-surface-500: 38 40 45;
+
+    --c-slate-200: 226 232 240;
+    --c-slate-300: 203 213 225;
+    --c-slate-400: 148 163 184;
+    --c-slate-500: 100 116 139;
+    --c-slate-600: 71 85 105;
+
+    --c-accent: 0 245 212; /* bright cyan */
+    --c-accent-glow: rgba(0, 245, 212, 0.15);
+
+    --c-chart-axis: 100 116 139;
   }
 
   html,
@@ -16,6 +77,7 @@
   body {
     @apply bg-black text-white font-sans antialiased;
     margin: 0;
+    transition: background-color 0.3s ease, color 0.3s ease;
   }
 
   /* Thin, theme-matched scrollbars */
@@ -27,12 +89,12 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #26282d;
+    background: rgb(var(--c-surface-500));
     border-radius: 9999px;
-    border: 2px solid #000;
+    border: 2px solid rgb(var(--c-bg));
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #34373d;
+    background: rgb(var(--c-surface-600));
   }
 }
 
@@ -46,12 +108,12 @@
   }
 }
 
-/* Recharts tooltip / cursor tweaks for the dark theme */
+/* Recharts: custom tooltips are used in-app, but keep the default themed too. */
 .recharts-default-tooltip {
-  background-color: #0c0d0f !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background-color: rgb(var(--c-surface-800)) !important;
+  border: 1px solid rgb(var(--c-fg) / 0.08) !important;
   border-radius: 12px !important;
 }
 .recharts-cartesian-axis-tick-value {
-  fill: #64748b;
+  fill: rgb(var(--c-chart-axis));
 }

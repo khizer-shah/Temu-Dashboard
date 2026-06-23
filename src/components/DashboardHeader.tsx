@@ -1,5 +1,6 @@
 import { Boxes } from 'lucide-react'
 import { AccountSwitcher } from './AccountSwitcher'
+import { ThemeToggle } from './ThemeToggle'
 
 export function DashboardHeader() {
   return (
@@ -17,7 +18,10 @@ export function DashboardHeader() {
           </div>
         </div>
 
-        <AccountSwitcher />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <AccountSwitcher />
+        </div>
       </div>
     </header>
   )

@@ -101,7 +101,7 @@ export function InvoiceReviewModal({ preview, onClose }: Props) {
                 type="checkbox"
                 checked={onlyMatched}
                 onChange={(e) => setOnlyMatched(e.target.checked)}
-                className="accent-[#00f5d4]"
+                className="accent-accent"
               />
               Matched only
             </label>
@@ -144,7 +144,7 @@ export function InvoiceReviewModal({ preview, onClose }: Props) {
                         type="checkbox"
                         checked={r.selected}
                         onChange={(e) => update(r.rowId, { selected: e.target.checked })}
-                        className="accent-[#00f5d4]"
+                        className="accent-accent"
                       />
                     </td>
                     <td className="px-4 py-2">

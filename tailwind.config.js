@@ -5,20 +5,32 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Single precise brand accent
+        // Semantic tokens backed by CSS variables (see index.css). Channels are
+        // space-separated RGB so `<alpha-value>` opacity modifiers still work.
+        // `white` = primary foreground, `black` = page background — both flip
+        // per theme, so the existing class names need no changes.
+        white: 'rgb(var(--c-fg) / <alpha-value>)',
+        black: 'rgb(var(--c-bg) / <alpha-value>)',
         accent: {
-          DEFAULT: '#00f5d4',
+          DEFAULT: 'rgb(var(--c-accent) / <alpha-value>)',
           dim: '#00bfae',
-          glow: 'rgba(0, 245, 212, 0.15)',
+          glow: 'var(--c-accent-glow)',
         },
-        // Muted slate scale for secondary labels / surfaces
+        slate: {
+          200: 'rgb(var(--c-slate-200) / <alpha-value>)',
+          300: 'rgb(var(--c-slate-300) / <alpha-value>)',
+          400: 'rgb(var(--c-slate-400) / <alpha-value>)',
+          500: 'rgb(var(--c-slate-500) / <alpha-value>)',
+          600: 'rgb(var(--c-slate-600) / <alpha-value>)',
+        },
+        // Muted surface scale for secondary labels / surfaces
         surface: {
-          900: '#000000',
-          850: '#070708',
-          800: '#0c0d0f',
-          700: '#141518',
-          600: '#1c1e22',
-          500: '#26282d',
+          900: 'rgb(var(--c-surface-900) / <alpha-value>)',
+          850: 'rgb(var(--c-surface-850) / <alpha-value>)',
+          800: 'rgb(var(--c-surface-800) / <alpha-value>)',
+          700: 'rgb(var(--c-surface-700) / <alpha-value>)',
+          600: 'rgb(var(--c-surface-600) / <alpha-value>)',
+          500: 'rgb(var(--c-surface-500) / <alpha-value>)',
         },
       },
       fontFamily: {

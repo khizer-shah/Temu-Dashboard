@@ -21,43 +21,42 @@ import {
   revenueOverTime,
 } from '../lib/aggregations'
 import { formatCurrencyCompact, formatNumber } from '../lib/format'
+import { useThemeColors } from '../lib/useThemeColors'
 import { ChartCard } from './ChartCard'
 
-const ACCENT = '#00f5d4'
-const GRID = 'rgba(255,255,255,0.05)'
-const AXIS = '#475569'
-
-// Status -> color. Cyan for the happy path, amber/red for attention states.
+// Status -> color. These hues (cyan/amber/red/sky) read acceptably in both
+// themes, so they stay static; only the chrome (grid/axis/tooltip) flips.
 const STATUS_COLORS: Record<string, string> = {
-  delivered: '#00f5d4',
-  shipped: '#34d3ee',
-  processing: '#fbbf24',
+  delivered: '#0d9488',
+  shipped: '#0ea5e9',
+  processing: '#f59e0b',
   pending: '#f59e0b',
   unshipped: '#f59e0b',
-  canceled: '#f87171',
-  cancelled: '#f87171',
-  refunded: '#f87171',
+  canceled: '#ef4444',
+  cancelled: '#ef4444',
+  refunded: '#ef4444',
 }
-const STATUS_FALLBACK = ['#00f5d4', '#34d3ee', '#818cf8', '#fbbf24', '#f87171', '#94a3b8']
+const STATUS_FALLBACK = ['#0d9488', '#0ea5e9', '#6366f1', '#f59e0b', '#ef4444', '#64748b']
 
 function statusColor(status: string, i: number): string {
   return STATUS_COLORS[status.toLowerCase()] ?? STATUS_FALLBACK[i % STATUS_FALLBACK.length]
 }
-
-const tooltipStyle = {
-  backgroundColor: '#0c0d0f',
-  border: '1px solid rgba(255,255,255,0.08)',
-  borderRadius: 12,
-} as const
 
 function truncate(s: string, n = 32): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s
 }
 
 export function ChartsGrid({ items, currency }: { items: CostedItem[]; currency: string }) {
+  const c = useThemeColors()
   const products = useMemo(() => topProductsByRevenue(items, 8), [items])
   const statuses = useMemo(() => statusBreakdown(items), [items])
   const trend = useMemo(() => revenueOverTime(items), [items])
+
+  const tooltipStyle = {
+    backgroundColor: c.tooltipBg,
+    border: `1px solid ${c.tooltipBorder}`,
+    borderRadius: 12,
+  }
 
   const ProductTooltip = ({ active, payload }: any) => {
     if (!active || !payload?.length) return null
@@ -104,11 +103,11 @@ export function ChartsGrid({ items, currency }: { items: CostedItem[]; currency:
       >
         <ResponsiveContainer width="100%" height={260}>
           <BarChart data={products} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-            <CartesianGrid horizontal={false} stroke={GRID} />
+            <CartesianGrid horizontal={false} stroke={c.grid} />
             <XAxis
               type="number"
               tickFormatter={(v) => formatCurrencyCompact(v, currency)}
-              stroke={AXIS}
+              stroke={c.axis}
               fontSize={11}
               tickLine={false}
               axisLine={false}
@@ -117,16 +116,16 @@ export function ChartsGrid({ items, currency }: { items: CostedItem[]; currency:
               type="category"
               dataKey="sku"
               width={90}
-              stroke={AXIS}
+              stroke={c.axis}
               fontSize={11}
               tickLine={false}
               axisLine={false}
               tickFormatter={(v) => truncate(String(v), 12)}
             />
-            <Tooltip content={<ProductTooltip />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+            <Tooltip content={<ProductTooltip />} cursor={{ fill: c.cursorFill }} />
             <Bar dataKey="revenue" radius={[0, 6, 6, 0]} maxBarSize={22}>
               {products.map((_, i) => (
-                <Cell key={i} fill={ACCENT} fillOpacity={1 - i * 0.09} />
+                <Cell key={i} fill={c.accent} fillOpacity={1 - i * 0.09} />
               ))}
             </Bar>
           </BarChart>
@@ -150,7 +149,7 @@ export function ChartsGrid({ items, currency }: { items: CostedItem[]; currency:
               innerRadius={58}
               outerRadius={92}
               paddingAngle={2}
-              stroke="#0c0d0f"
+              stroke={c.sliceStroke}
               strokeWidth={2}
             >
               {statuses.map((s, i) => (
@@ -182,14 +181,14 @@ export function ChartsGrid({ items, currency }: { items: CostedItem[]; currency:
             <AreaChart data={trend} margin={{ left: 4, right: 16, top: 8, bottom: 4 }}>
               <defs>
                 <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={ACCENT} stopOpacity={0.35} />
-                  <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
+                  <stop offset="0%" stopColor={c.accent} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={c.accent} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke={GRID} vertical={false} />
+              <CartesianGrid stroke={c.grid} vertical={false} />
               <XAxis
                 dataKey="label"
-                stroke={AXIS}
+                stroke={c.axis}
                 fontSize={10}
                 tickLine={false}
                 axisLine={false}
@@ -197,21 +196,21 @@ export function ChartsGrid({ items, currency }: { items: CostedItem[]; currency:
                 minTickGap={20}
               />
               <YAxis
-                stroke={AXIS}
+                stroke={c.axis}
                 fontSize={11}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={(v) => formatCurrencyCompact(v, currency)}
                 width={52}
               />
-              <Tooltip content={<TrendTooltip />} cursor={{ stroke: AXIS, strokeDasharray: '3 3' }} />
+              <Tooltip content={<TrendTooltip />} cursor={{ stroke: c.axis, strokeDasharray: '3 3' }} />
               <Area
                 type="monotone"
                 dataKey="revenue"
-                stroke={ACCENT}
+                stroke={c.accent}
                 strokeWidth={2}
                 fill="url(#revFill)"
-                dot={{ r: 2.5, fill: ACCENT, strokeWidth: 0 }}
+                dot={{ r: 2.5, fill: c.accent, strokeWidth: 0 }}
                 activeDot={{ r: 4 }}
               />
             </AreaChart>
