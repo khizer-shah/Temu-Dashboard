@@ -11,6 +11,7 @@ import {
 import type { CostedItem } from '../lib/costModel'
 import { downloadCsv } from '../lib/exportCsv'
 import { formatMoney, formatNumber, formatCurrencyCompact, formatPercent } from '../lib/format'
+import { ProductDetailModal } from './ProductDetailModal'
 
 type SortKey =
   | 'orderId'
@@ -65,7 +66,10 @@ const columns: Column[] = [
     align: 'left',
     render: (o) => (
       <div className="max-w-[260px]">
-        <div className="truncate font-medium text-white" title={o.productName}>
+        <div
+          className="truncate font-medium text-white underline-offset-2 transition-colors group-hover/prod:text-accent group-hover/prod:underline"
+          title={`${o.productName} — click for details`}
+        >
           {o.productName}
         </div>
         {o.variation && <div className="truncate text-xs text-slate-500">{o.variation}</div>}
@@ -149,6 +153,7 @@ export function OrdersTable({ items, currency }: { items: CostedItem[]; currency
   const [sortKey, setSortKey] = useState<SortKey>('revenue')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [page, setPage] = useState(0)
+  const [detail, setDetail] = useState<CostedItem | null>(null)
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -274,14 +279,27 @@ export function OrdersTable({ items, currency }: { items: CostedItem[]; currency
           <tbody>
             {pageRows.map((o) => (
               <tr key={o.id} className="border-b border-white/[0.03] transition-colors hover:bg-white/[0.02]">
-                {columns.map((col) => (
-                  <td
-                    key={col.key}
-                    className={['px-4 py-3', col.align === 'right' ? 'text-right' : 'text-left'].join(' ')}
-                  >
-                    {col.render(o, currency)}
-                  </td>
-                ))}
+                {columns.map((col) =>
+                  col.key === 'productName' ? (
+                    <td key={col.key} className="px-4 py-3 text-left">
+                      <button
+                        type="button"
+                        onClick={() => setDetail(o)}
+                        className="group/prod block cursor-pointer text-left"
+                        title="View product details"
+                      >
+                        {col.render(o, currency)}
+                      </button>
+                    </td>
+                  ) : (
+                    <td
+                      key={col.key}
+                      className={['px-4 py-3', col.align === 'right' ? 'text-right' : 'text-left'].join(' ')}
+                    >
+                      {col.render(o, currency)}
+                    </td>
+                  ),
+                )}
               </tr>
             ))}
             {pageRows.length === 0 && (
@@ -321,6 +339,15 @@ export function OrdersTable({ items, currency }: { items: CostedItem[]; currency
           </button>
         </div>
       </div>
+
+      {detail && (
+        <ProductDetailModal
+          item={detail}
+          allItems={items}
+          currency={currency}
+          onClose={() => setDetail(null)}
+        />
+      )}
     </div>
   )
 }
