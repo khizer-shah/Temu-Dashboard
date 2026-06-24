@@ -19,7 +19,8 @@
       "Bash(curl -s -m 20 -o /tmp/h2.txt -w \"HTTP %{http_code}\\\\n\" \"https://temu-dashboard-xi.vercel.app/api/health?t=$\\(date +%s\\)\")",
       "Bash(git commit -q -m 'Add zero-dependency /api/ping to isolate function crash *)",
       "Bash(git rm *)",
-      "Bash(git commit -q -m 'Remove api/tsconfig.json \\(CommonJS+noEmit conflicted with type:module, crashing all functions\\) *)"
+      "Bash(git commit -q -m 'Remove api/tsconfig.json \\(CommonJS+noEmit conflicted with type:module, crashing all functions\\) *)",
+      "Bash(git commit -q -m 'Move serverless shared code out of api/_lib into /server with .js ESM imports *)"
     ]
   }
 }
